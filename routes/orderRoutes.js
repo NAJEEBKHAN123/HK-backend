@@ -1,15 +1,17 @@
-const express = require("express");
+const express = require('express');
 const router = express.Router();
 const {
   createOrder,
   getOrder,
   getAllOrders,
   updateOrder,
-} = require("../controller/orderController");
+  deleteOrder
+} = require('../controller/orderController');
 
-router.post("/", createOrder);          // Create order
-router.get("/:id", getOrder);           // Get single order by ID
-router.get("/", getAllOrders);          // Get all orders
-router.put("/:id", updateOrder);        // ✅ Update order by ID
+router.post('/', createOrder);
+router.get('/', getAllOrders);
+router.get('/:id', getOrder);
+router.patch('/:id', updateOrder); // Using PATCH for partial updates
+router.delete('/:id', deleteOrder);
 
 module.exports = router;

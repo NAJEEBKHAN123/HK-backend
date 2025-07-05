@@ -14,10 +14,10 @@ const app = express();
 // Enhanced CORS configuration
 app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:5173',
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true  
 }));
-
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));

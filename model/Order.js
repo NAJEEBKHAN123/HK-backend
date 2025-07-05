@@ -55,9 +55,15 @@ const orderSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'completed', 'failed'],
-    default: 'pending'
+    enum: ['Pending', 'Processing', 'Completed', 'Cancelled'],
+    default: 'Pending'
   },
+  paymentMethod: {
+    type: String,
+    enum: ['Bank Transfer', 'Credit Card', 'PayPal', 'Other']
+  },
+  paymentConfirmedAt: Date,
+  transactionReference: String,
   stripeSessionId: String
 }, { 
   timestamps: true,
@@ -65,7 +71,7 @@ const orderSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
-// Add indexes for better query performance
+// Indexes for better performance
 orderSchema.index({ email: 1 });
 orderSchema.index({ status: 1 });
 orderSchema.index({ createdAt: -1 });
