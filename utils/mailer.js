@@ -46,14 +46,14 @@ const sendContactEmail = async ({ name, email, phone, message }) => {
 // Sends confirmation to the user
 const sendConfirmationEmail = async ({ name, email }) => {
   const mailOptions = {
-    from: `"CareerSociete Team" <${process.env.EMAIL_USER}>`,
+    from: `"OuvrirSociete Team" <${process.env.EMAIL_USER}>`,
     to: email,
     subject: 'We received your message',
     html: `
       <h3>Hi ${name},</h3>
       <p>Thanks for reaching out. We have received your message and will get back to you shortly.</p>
       <br/>
-      <p>Regards,<br/>CareerSociete Team</p>
+      <p>Regards,<br/>OuvrirSociete Team</p>
     `
   };
 
