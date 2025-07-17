@@ -7,17 +7,30 @@ const bookingRouter = require('./routes/booking');
 const contactRouter = require('./routes/contact.route');
 const orderRouter = require('./routes/orderRoutes');
 const adminRoutes = require('./routes/userRoute')
-
+const paymentRoutes = require('./routes/paymentRoutes');
 
 const app = express();
 
 // Enhanced CORS configuration
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://hk-frontend-rust.vercel.app"
+];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: function (origin, callback) {
+    // Allow requests with no origin (e.g., Postman) or matching origins
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("CORS not allowed from this origin: " + origin));
+    }
+  },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true  
+  credentials: true
 }));
+
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -30,6 +43,8 @@ app.use('/api/bookings', bookingRouter);
 app.use('/api/contact', contactRouter);
 app.use('/api/orders', orderRouter);
 app.use("/api/admin", adminRoutes);
+app.use("/api/payments", paymentRoutes);
+
 
 
 // Health Check

@@ -1,145 +1,178 @@
 const Order = require('../model/Order');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
-// Helper function for error handling
+
 const handleErrorResponse = (res, error, context) => {
   console.error(`Error in ${context}:`, error);
   res.status(500).json({
     success: false,
     message: `Failed to ${context}`,
-    error: error.message
+    error: process.env.NODE_ENV === 'development' ? error.message : undefined
   });
 };
 
-// Create a new order
+// Create Order with Stripe Session
 exports.createOrder = async (req, res) => {
   try {
-    const { fullName, birthday, address, phone, email, idImage, plan, price } = req.body;
+    const { fullName, email, phone, birthday, address, plan, price, idImage } = req.body;
 
-    // Create new order
-    const newOrder = await Order.create({
+    // Validate required fields
+    const requiredFields = { fullName, email, phone, birthday, address, plan, price, idImage };
+    for (const [field, value] of Object.entries(requiredFields)) {
+      if (!value) return res.status(400).json({ success: false, message: `${field} is required` });
+    }
+
+    // Create order
+    const order = await Order.create({
       fullName,
-      birthday,
-      address,
-      phone,
       email,
-      idImage,
-      plan,
+      phone,
+      birthday: new Date(birthday),
+      address,
+      plan: plan.toUpperCase(),
       price,
-      status: 'Pending'
+      idImage,
+      status: 'pending'
     });
 
-    res.status(201).json({
-      success: true,
-      data: newOrder
+    // Create Stripe session
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: 'eur',
+          product_data: { name: `${plan} Package` },
+          unit_amount: price,
+        },
+        quantity: 1,
+      }],
+      mode: 'payment',
+      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL}/payment-cancelled?order_id=${order._id}`,
+      metadata: { orderId: order._id.toString() }
     });
+
+    // Link Stripe session to order
+    order.stripeSessionId = session.id;
+    await order.save();
+
+    res.json({ 
+      success: true,
+      url: session.url,
+      orderId: order._id
+    });
+
   } catch (error) {
     handleErrorResponse(res, error, 'create order');
   }
 };
 
-// Get all orders
+// Handle Payment Cancellation
+exports.handlePaymentCancel = async (req, res) => {
+  try {
+    const { order_id } = req.query;
+    const { reason } = req.body;
+
+    const order = await Order.findByIdAndUpdate(
+      order_id,
+      {
+        status: 'cancelled',
+        cancellationReason: reason || 'user_cancelled',
+        cancelledAt: new Date()
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    res.json({ 
+      success: true,
+      data: order,
+      message: 'Order cancelled successfully'
+    });
+
+  } catch (error) {
+    handleErrorResponse(res, error, 'cancel order');
+  }
+};
+
+// Stripe Webhook Handler
+exports.handleStripeWebhook = async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  // Handle payment failure
+  if (event.type === 'checkout.session.async_payment_failed') {
+    const session = event.data.object;
+    await Order.findOneAndUpdate(
+      { stripeSessionId: session.id },
+      {
+        status: 'failed',
+        cancellationReason: 'payment_failed',
+        failedAt: new Date()
+      }
+    );
+  }
+
+  // Handle successful payment
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    await Order.findOneAndUpdate(
+      { stripeSessionId: session.id },
+      {
+        status: 'completed',
+        paymentIntentId: session.payment_intent,
+        paymentConfirmedAt: new Date()
+      }
+    );
+  }
+
+  res.json({ received: true });
+};
+
+// Get All Orders
 exports.getAllOrders = async (req, res) => {
   try {
     const orders = await Order.find().sort({ createdAt: -1 });
-    res.status(200).json({
-      success: true,
-      count: orders.length,
-      data: orders
-    });
-    
+    res.json({ success: true, count: orders.length, data: orders });
   } catch (error) {
     handleErrorResponse(res, error, 'fetch orders');
   }
 };
 
-// Get single order
+// Get Single Order
 exports.getOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
     if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
+      return res.status(404).json({ success: false, message: 'Order not found' });
     }
-    res.status(200).json({
-      success: true,
-      data: order
-    });
+    res.json({ success: true, data: order });
   } catch (error) {
     handleErrorResponse(res, error, 'fetch order');
   }
 };
 
-// Update order status
-exports.updateOrder = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status, paymentMethod, transactionReference } = req.body;
-
-    // Validate status
-    const validStatuses = ['Pending', 'Processing', 'Completed', 'Cancelled'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid status value'
-      });
-    }
-
-    // Prepare update
-    const updateData = { status };
-    if (status === 'Completed') {
-      if (!paymentMethod) {
-        return res.status(400).json({
-          success: false,
-          message: 'Payment method is required when completing an order'
-        });
-      }
-      updateData.paymentMethod = paymentMethod;
-      updateData.paymentConfirmedAt = new Date();
-      updateData.transactionReference = transactionReference;
-    }
-
-    const updatedOrder = await Order.findByIdAndUpdate(
-      id,
-      updateData,
-      { new: true, runValidators: true }
-    );
-
-    if (!updatedOrder) {
-      return res.status(404).json({ 
-        success: false,
-        message: "Order not found" 
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      data: updatedOrder
-    });
-  } catch (error) {
-    console.error('Update error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Server error during update'
-    });
-  }
-};
-
-// Delete order (optional)
+// Delete Order
 exports.deleteOrder = async (req, res) => {
   try {
     const order = await Order.findByIdAndDelete(req.params.id);
     if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
+      return res.status(404).json({ success: false, message: 'Order not found' });
     }
-    res.status(200).json({
-      success: true,
-      message: 'Order deleted successfully'
-    });
+    res.json({ success: true, message: 'Order deleted' });
   } catch (error) {
     handleErrorResponse(res, error, 'delete order');
   }

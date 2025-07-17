@@ -5,13 +5,18 @@ const {
   getOrder,
   getAllOrders,
   updateOrder,
-  deleteOrder
+  deleteOrder,
+  handlePaymentCancel
 } = require('../controller/orderController');
 
+// Order Routes
 router.post('/', createOrder);
 router.get('/', getAllOrders);
 router.get('/:id', getOrder);
-router.patch('/:id', updateOrder); // Using PATCH for partial updates
 router.delete('/:id', deleteOrder);
+
+// Payment Handling
+// router.get('/payment-cancelled', handlePaymentCancel);
+// router.post('/stripe-webhook', handleStripeWebhook);
 
 module.exports = router;
