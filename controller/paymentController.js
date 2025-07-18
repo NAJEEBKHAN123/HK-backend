@@ -2,6 +2,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const Order = require('../model/Order');
 const jwt = require('jsonwebtoken');
 const PDFDocument = require('pdfkit');
+const emailService = require('../services/emailService');
 
 
 
@@ -138,7 +139,6 @@ exports.createPaymentSession = async (req, res) => {
   try {
     const { orderId } = req.body;
     
-    // Validate input
     if (!orderId) {
       return res.status(400).json({ 
         success: false,
@@ -146,7 +146,6 @@ exports.createPaymentSession = async (req, res) => {
       });
     }
 
-    // Get order from database
     const order = await Order.findById(orderId);
     if (!order) {
       return res.status(404).json({ 
@@ -155,7 +154,6 @@ exports.createPaymentSession = async (req, res) => {
       });
     }
 
-    // Create checkout session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
@@ -165,7 +163,7 @@ exports.createPaymentSession = async (req, res) => {
             name: order.plan,
             description: `Payment for ${order.plan}`,
           },
-          unit_amount: order.price * 100, // Convert to cents
+          unit_amount: order.price * 100,
         },
         quantity: 1,
       }],
@@ -177,16 +175,9 @@ exports.createPaymentSession = async (req, res) => {
       metadata: {
         orderId: orderId.toString(),
         plan: order.plan
-      },
-      payment_intent_data: {
-        description: `Payment for ${order.plan}`,
-        metadata: {
-          orderId: orderId.toString()
-        }
       }
     });
 
-    // Update order with session ID
     order.stripeSessionId = session.id;
     order.status = 'processing';
     await order.save();
@@ -200,8 +191,7 @@ exports.createPaymentSession = async (req, res) => {
     console.error('Payment session error:', error);
     res.status(500).json({ 
       success: false,
-      message: 'Error creating payment session',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: 'Error creating payment session'
     });
   }
 };
@@ -264,7 +254,7 @@ exports.handleWebhook = async (req, res) => {
 
   try {
     event = stripe.webhooks.constructEvent(
-      req.body,
+      req.rawBody,
       sig,
       process.env.STRIPE_WEBHOOK_SECRET
     );
@@ -273,48 +263,93 @@ exports.handleWebhook = async (req, res) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Handle successful payment
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object;
-    
-    try {
-      const order = await Order.findOneAndUpdate(
-        { _id: session.client_reference_id },
-        { 
-          status: 'completed',
-          paymentConfirmedAt: new Date(),
-          stripePaymentIntentId: session.payment_intent,
-          paymentMethod: session.payment_method_types[0],
-          transactionReference: session.id
-        },
-        { new: true }
-      );
-
-      if (!order) {
-        console.error('Order not found for session:', session.id);
-        return res.status(404).json({ success: false });
-      }
-
-      // Here you would typically:
-      // 1. Send confirmation email
-      // 2. Trigger any post-payment processes
-      // 3. Update inventory if needed
-
-    } catch (err) {
-      console.error('Order update error:', err);
-      return res.status(500).json({ success: false });
-    }
+  switch (event.type) {
+    case 'checkout.session.completed':
+      await handleCompletedSession(event.data.object);
+      break;
+    case 'checkout.session.async_payment_failed':
+      await handleFailedSession(event.data.object);
+      break;
+    default:
+      console.log(`Unhandled event type: ${event.type}`);
   }
 
   res.json({ received: true });
 };
 
+async function handleCompletedSession(session) {
+  try {
+    // Retrieve the full payment intent first
+    const paymentIntent = await stripe.paymentIntents.retrieve(
+      session.payment_intent
+    );
+
+    const order = await Order.findByIdAndUpdate(
+      session.client_reference_id,
+      {
+        status: 'completed',
+        paymentConfirmedAt: new Date(),
+        stripePaymentIntentId: paymentIntent.id,
+        paymentMethod: paymentIntent.payment_method_types?.[0] || 'card'
+      },
+      { new: true }
+    );
+
+    if (!order) {
+      console.error('Order not found for session:', session.client_reference_id);
+      return;
+    }
+
+    // ONLY send through this one channel
+    await emailService.sendDualNotification(order);
+    
+  } catch (error) {
+    console.error('Payment processing error:', error);
+  }
+}
+
+async function handleFailedSession(session) {
+  await Order.findByIdAndUpdate(
+    session.client_reference_id,
+    {
+      status: 'failed',
+      paymentFailedAt: new Date()
+    }
+  );
+}
+
+async function handleCompletedSession(session) {
+  const order = await Order.findByIdAndUpdate(
+    session.client_reference_id,
+    {
+      status: 'completed',
+      paymentConfirmedAt: new Date(),
+      stripePaymentIntentId: session.payment_intent,
+      paymentMethod: session.payment_method_types?.[0] || 'card'
+    },
+    { new: true }
+  );
+
+  if (order) {
+    await emailService.sendPaymentConfirmationEmail(order);
+  }
+}
+
+
+async function handleFailedSession(session) {
+  await Order.findByIdAndUpdate(
+    session.client_reference_id,
+    {
+      status: 'failed',
+      paymentFailedAt: new Date()
+    }
+  );
+}
+
 // In your paymentController.js
 exports.verifyPayment = async (req, res) => {
   try {
     const { sessionId } = req.params;
-
-    // Retrieve Stripe session
     const session = await stripe.checkout.sessions.retrieve(sessionId, {
       expand: ['payment_intent']
     });
@@ -326,7 +361,6 @@ exports.verifyPayment = async (req, res) => {
       });
     }
 
-    // Find and update order
     const order = await Order.findOneAndUpdate(
       { stripeSessionId: sessionId },
       { 
@@ -344,16 +378,16 @@ exports.verifyPayment = async (req, res) => {
       });
     }
 
-    res.json({
-      success: true,
-      orderId: order._id
-    });
+    // Fire-and-forget email sending
+    emailService.sendDualNotification(order)
+      .catch(e => console.error('Post-verification email failed:', e));
 
+    res.json({ success: true, orderId: order._id });
   } catch (error) {
     console.error('Payment verification error:', error);
     res.status(500).json({ 
       success: false,
-      message: 'Error verifying payment'
+      message: 'Error verifying payment' 
     });
   }
 };
