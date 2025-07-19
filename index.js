@@ -8,6 +8,9 @@ const contactRouter = require('./routes/contact.route');
 const orderRouter = require('./routes/orderRoutes');
 const adminRoutes = require('./routes/userRoute')
 const paymentRoutes = require('./routes/paymentRoutes');
+const partnerAuthRoutes = require('./routes/partnerAuth');
+const partnerAdminRoutes = require('./routes/admin');
+
 
 const app = express();
 
@@ -44,6 +47,9 @@ app.use('/api/contact', contactRouter);
 app.use('/api/orders', orderRouter);
 app.use("/api/admin", adminRoutes);
 app.use("/api/payments", paymentRoutes);
+app.use('/api/partner-auth', partnerAuthRoutes);
+app.use('/api/partner-admin', partnerAdminRoutes);
+
 
 
 

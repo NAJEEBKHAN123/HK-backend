@@ -56,10 +56,7 @@ const orderSchema = new mongoose.Schema({
   },
 
   // Payment Tracking
-  stripeSessionId: {
-    type: String,
-    index: true
-  },
+  stripeSessionId: String,  // Removed index: true here
   paymentIntentId: String,
   paymentMethod: String,
   transactionReference: String,
@@ -70,11 +67,13 @@ const orderSchema = new mongoose.Schema({
     enum: ['pending', 'processing', 'completed', 'cancelled', 'failed'],
     default: 'pending'
   },
-   cancellationReason: {
+  cancellationReason: {
     type: String,
     enum: ['user_cancelled', 'payment_failed', 'expired', 'abandoned', 'other'],
     default: null
   },
+  referralCode: String, // Track which partner referred this order
+  discountedPrice: Number, // Store final price after discount
 
   // Timestamps
   paymentConfirmedAt: Date,
@@ -86,10 +85,10 @@ const orderSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
-// Indexes
+// Indexes (kept the schema.index version)
 orderSchema.index({ email: 1 });
 orderSchema.index({ status: 1 });
 orderSchema.index({ createdAt: -1 });
-orderSchema.index({ stripeSessionId: 1 });
+orderSchema.index({ stripeSessionId: 1 });  // This is now the single definition
 
 module.exports = mongoose.model('Order', orderSchema);
