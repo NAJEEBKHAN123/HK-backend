@@ -6,6 +6,7 @@ const {
 } = require('../controller/partnerController');
 
 // Add this new route for invite verification
+
 router.post('/verify-invite', verifyInvite);
 router.post('/register', registerPartner);
 
