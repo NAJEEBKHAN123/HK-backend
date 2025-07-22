@@ -26,7 +26,7 @@ const handleErrorResponse = (res, error, action) => {
 
 exports.createOrder = async (req, res) => {
   try {
-    const { plan, customerDetails, referralCode, referredBy, clientId } = req.body;
+    const { plan, customerDetails, referralCode, clientId } = req.body;
 
     // Validate required fields
     if (!plan || !customerDetails) {
@@ -53,13 +53,15 @@ exports.createOrder = async (req, res) => {
       source: 'DIRECT',
       partnerCommission: 0,
       referredBy: null,
-      referralCode: null
+      referralCode: null,
+      client: clientId || null
     };
 
-    // Process referral only if BOTH code and referrer ID are provided
-    if (referralCode && referredBy) {
+    // ONLY process as referral if ALL conditions are met:
+    // 1. Explicit referralCode is provided in the current request
+    // 2. The code matches an active partner
+    if (referralCode) {
       const partner = await Partner.findOne({
-        _id: referredBy,
         referralCode: referralCode,
         status: 'active'
       });
@@ -72,15 +74,10 @@ exports.createOrder = async (req, res) => {
         orderData.partnerCommission = commission;
         orderData.finalPrice = PRICING[plan] - commission;
         
-        console.log('Applying referral commission:', {
+        console.log('Referral applied from current order:', {
           partner: partner._id,
           commission: commission,
           finalPrice: orderData.finalPrice
-        });
-      } else {
-        console.warn('Referral partner not found or inactive:', {
-          referredBy,
-          referralCode
         });
       }
     }
@@ -96,7 +93,6 @@ exports.createOrder = async (req, res) => {
     console.log('Creating order with:', {
       plan: orderData.plan,
       source: orderData.source,
-      originalPrice: orderData.originalPrice,
       finalPrice: orderData.finalPrice,
       commission: orderData.partnerCommission,
       hasReferral: orderData.referralCode !== null
@@ -138,7 +134,7 @@ exports.createOrder = async (req, res) => {
       orderId: order._id,
       isReferral: orderData.source === 'REFERRAL',
       finalPrice: orderData.finalPrice,
-      commissionApplied: orderData.partnerCommission
+      commission: orderData.partnerCommission
     });
 
   } catch (error) {

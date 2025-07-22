@@ -11,24 +11,21 @@ exports.clientSignup = async (req, res) => {
     if (!name || !email || !password) {
       return res.status(400).json({ 
         success: false,
-        error: 'Name, email and password are required',
-        code: 'MISSING_FIELDS'
+        error: 'Name, email and password are required'
       });
     }
 
     if (!validator.isEmail(email)) {
       return res.status(400).json({
         success: false,
-        error: 'Please provide a valid email address',
-        code: 'INVALID_EMAIL'
+        error: 'Invalid email format'
       });
     }
 
     if (password.length < 8) {
       return res.status(400).json({
         success: false,
-        error: 'Password must be at least 8 characters',
-        code: 'WEAK_PASSWORD'
+        error: 'Password must be at least 8 characters'
       });
     }
 
@@ -37,48 +34,58 @@ exports.clientSignup = async (req, res) => {
     if (existingClient) {
       return res.status(409).json({
         success: false,
-        error: 'Email already registered',
-        code: 'EMAIL_EXISTS'
+        error: 'Email already registered'
       });
     }
 
-    // Prepare client data
+    // Initialize client data
     const clientData = {
       name,
       email,
-      password
+      password,
+      source: 'DIRECT', // Default
+      referredBy: null,
+      referralCode: null
     };
 
-    // Handle referral code
+    // Handle referral if code provided
     if (referralCode) {
-      const referringPartner = await Partner.findOne({ 
+      const partner = await Partner.findOne({ 
         referralCode,
         status: 'active'
       });
-      
-      if (referringPartner) {
-        clientData.referredBy = referringPartner._id;
+
+      if (partner) {
         clientData.source = 'REFERRAL';
+        clientData.referredBy = partner._id;
         clientData.referralCode = referralCode;
+
+        // Track referral click
+        await Partner.findByIdAndUpdate(partner._id, {
+          $inc: { referralClicks: 1 }
+        });
       }
     }
 
-    // Create the client first
+    // Create client
     const client = await Client.create(clientData);
 
-    // Then update the partner's data
-    if (referralCode && client.referredBy) {
+    // Update partner if referral
+    if (client.source === 'REFERRAL') {
       await Partner.findByIdAndUpdate(client.referredBy, {
-        $addToSet: { clientsReferred: client._id },
-        $inc: { referralClicks: 1 }
+        $addToSet: { clientsReferred: client._id }
       });
     }
 
     // Create JWT
     const token = jwt.sign(
-      { id: client._id, role: 'client' },
+      { 
+        id: client._id, 
+        role: 'client',
+        source: client.source 
+      },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+      { expiresIn: '30d' }
     );
 
     res.status(201).json({
@@ -87,52 +94,49 @@ exports.clientSignup = async (req, res) => {
       client: {
         id: client._id,
         name: client.name,
-        email: client.email
-      },
-      redirectUrl: '/pricingCards'
+        email: client.email,
+        source: client.source,
+        referralCode: client.referralCode
+      }
     });
 
   } catch (error) {
-    console.error('Signup error:', error.stack);
+    console.error('Signup error:', error);
     res.status(500).json({
       success: false,
-      error: 'Registration failed',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: 'Registration failed'
     });
   }
 };
-
-
 
 exports.clientLogin = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Find client
     const client = await Client.findOne({ email }).select('+password');
     if (!client) {
       return res.status(401).json({ 
         success: false,
-        error: 'Invalid credentials',
-        code: 'INVALID_CREDENTIALS'
+        error: 'Invalid credentials'
       });
     }
 
-    // Check password
     const isMatch = await client.comparePassword(password);
     if (!isMatch) {
       return res.status(401).json({
         success: false,
-        error: 'Invalid credentials',
-        code: 'INVALID_CREDENTIALS'
+        error: 'Invalid credentials'
       });
     }
 
-    // Generate token
     const token = jwt.sign(
-      { id: client._id, role: 'client' },
+      { 
+        id: client._id, 
+        role: 'client',
+        source: client.source 
+      },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+      { expiresIn: '30d' }
     );
 
     res.json({
@@ -141,7 +145,8 @@ exports.clientLogin = async (req, res) => {
       client: {
         id: client._id,
         name: client.name,
-        email: client.email
+        email: client.email,
+        source: client.source
       }
     });
 
@@ -152,4 +157,3 @@ exports.clientLogin = async (req, res) => {
     });
   }
 };
-
