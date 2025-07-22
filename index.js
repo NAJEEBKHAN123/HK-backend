@@ -6,10 +6,12 @@ const DBConnection = require('./db');
 const bookingRouter = require('./routes/booking');
 const contactRouter = require('./routes/contact.route');
 const orderRouter = require('./routes/orderRoutes');
-const adminRoutes = require('./routes/userRoute')
+const adminRoutes = require('./routes/superAdminRoute')
 const paymentRoutes = require('./routes/paymentRoutes');
 const partnerAuthRoutes = require('./routes/partnerAuth');
 const partnerAdminRoutes = require('./routes/admin');
+const clientRoutes = require('./routes/clientRoute')
+
 
 
 const app = express();
@@ -21,6 +23,8 @@ const allowedOrigins = [
 ];
 
 app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  credentials: true,
   origin: function (origin, callback) {
     // Allow requests with no origin (e.g., Postman) or matching origins
     if (!origin || allowedOrigins.includes(origin)) {
@@ -31,7 +35,7 @@ app.use(cors({
   },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
+  
 }));
 
 // Middleware
@@ -49,8 +53,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use('/api/partner-auth', partnerAuthRoutes);
 app.use('/api/partner-admin', partnerAdminRoutes);
-
-
+app.use('/api/auth/client', clientRoutes);
 
 
 // Health Check
@@ -64,6 +67,7 @@ app.get('/api/health', (req, res) => {
 // Error Handling Middleware
 app.use((err, req, res, next) => {
   console.error(`[${new Date().toISOString()}] Error:`, err.stack);
+  
   res.status(500).json({
     success: false,
     message: process.env.NODE_ENV === 'development' 

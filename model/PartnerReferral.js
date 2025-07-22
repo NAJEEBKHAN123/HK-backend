@@ -34,7 +34,7 @@ const partnerSchema = new mongoose.Schema({
   },
   commissionRate: {
     type: Number,
-    default: 10,
+    default: 10, // 10% commission
     min: 0,
     max: 100
   },
@@ -58,7 +58,9 @@ const partnerSchema = new mongoose.Schema({
   referralClicks: {
     type: Number,
     default: 0
-  }
+  },
+  lastClickIP: String,
+  lastClickDate: Date
 }, { 
   timestamps: true,
   toJSON: { virtuals: true },
@@ -74,6 +76,11 @@ partnerSchema.virtual('availableCommission').get(function() {
   return this.commissionEarned - this.commissionPaid;
 });
 
+partnerSchema.virtual('conversionRate').get(function() {
+  if (this.referralClicks === 0) return 0;
+  return ((this.clientsReferred.length / this.referralClicks) * 100).toFixed(2);
+});
+
 // Middleware
 partnerSchema.pre('save', async function(next) {
   if (!this.isModified('password')) return next();
@@ -81,8 +88,16 @@ partnerSchema.pre('save', async function(next) {
   next();
 });
 
+// Methods
 partnerSchema.methods.comparePassword = async function(candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
+};
+
+partnerSchema.methods.addCommission = async function(amount, orderId, clientId) {
+  this.commissionEarned += amount;
+  this.ordersReferred.push(orderId);
+  this.clientsReferred.push(clientId);
+  return this.save();
 };
 
 module.exports = mongoose.model('Partner', partnerSchema);

@@ -1,22 +1,17 @@
 const express = require('express');
 const router = express.Router();
-const {
-  createOrder,
-  getOrder,
-  getAllOrders,
-  updateOrder,
-  deleteOrder,
-  handlePaymentCancel
-} = require('../controller/orderController');
+const orderController = require('../controller/orderController');
+const { protect, verifyAdmin } = require('../middleware/authMiddleware');
 
-// Order Routes
-router.post('/', createOrder);
-router.get('/', getAllOrders);
-router.get('/:id', getOrder);
-router.delete('/:id', deleteOrder);
+// Public routes
+router.post('/', orderController.createOrder);
+router.post('/webhook', express.raw({ type: 'application/json' }), orderController.handleStripeWebhook);
 
-// Payment Handling
-// router.get('/payment-cancelled', handlePaymentCancel);
-// router.post('/stripe-webhook', handleStripeWebhook);
+router.get('/:orderId/public', orderController.getPublicOrder); 
+// Protected routes
+router.get('/', protect, verifyAdmin, orderController.getAllOrders);
+router.get('/:orderId', protect, orderController.getOrder);
+router.put('/:id/cancel', protect, orderController.cancelOrder);
 
 module.exports = router;
+

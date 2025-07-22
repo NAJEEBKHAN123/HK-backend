@@ -1,13 +1,22 @@
 const express = require('express');
 const router = express.Router();
-const {
-  verifyInvite,
-  registerPartner
-} = require('../controller/partnerController');
+const partnerController = require('../controller/partnerController');
+const { protect, verifyAdmin } = require('../middleware/authMiddleware');
 
-// Add this new route for invite verification
+// Public routes
+router.post('/verify-invite', partnerController.verifyInvite);
+router.post('/register', partnerController.registerPartner);
+router.get('/verify-referral', partnerController.verifyReferral);
 
-router.post('/verify-invite', verifyInvite);
-router.post('/register', registerPartner);
+// Admin-protected routes
+router.post('/generate-credentials', 
+  protect,
+  verifyAdmin,
+  partnerController.generatePartnerCredential
+);
+
+// Partner-protected routes
+router.get('/dashboard', protect, partnerController.getPartnerDashboard);
+router.post('/request-payout', protect, partnerController.requestPayout);
 
 module.exports = router;

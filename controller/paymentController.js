@@ -1,5 +1,6 @@
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const Order = require("../model/Order");
+const Client = require('../model/Client.js')
 const jwt = require("jsonwebtoken");
 const PDFDocument = require("pdfkit");
 const emailService = require("../services/emailService");
@@ -142,60 +143,81 @@ exports.downloadReceipt = async (req, res) => {
 };
 // controllers/paymentController.js
 exports.createPaymentSession = async (req, res) => {
-  const { plan, price, ref } = req.body;
   try {
-    const referralCode = req.cookies.referralCode; // Silently set from ?ref=partner123
+    const { orderId } = req.body;
 
-    // Plan prices in cents
-    const planPrices = {
-      STARTER: 390000, // €3,900
-      TURNKEY: 460000, // €4,600
-      PREMIUM: 890000, // €8,900
-    };
+    if (!orderId) {
+      return res.status(400).json({
+        error: "Missing orderId in request body",
+      });
+    }
 
-    // Verify if referral is valid
-    const partner = await Partner.findOne({ referralCode: ref });
-    const isPartnerReferral = !!partner;
+    // Get order and populate client details
+    const order = await Order.findById(orderId).populate("client");
 
-    // Apply 10% discount ONLY for partner referrals (hidden)
-    // Apply hidden 10% discount
-    const finalAmount = isPartnerReferral
-      ? Math.round(price * 0.9) // 10% off
-      : price;
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" });
+    }
 
-    // Create order (no discount info shown to user)
-    const order = await Order.create({
-      plan,
-      price: planPrices[plan],
-      finalAmount, // Store actual charged amount
-      isPartnerReferral, // Track for reporting
-    });
+    const client = order.client;
+    const price = order.finalPrice || order.originalPrice;
+    const plan = order.plan;
 
-    // Stripe Checkout
+    let partnerCommission = 0;
+    let referredBy = null;
+
+    if (client?.referredBy) {
+      const partner = await Partner.findById(client.referredBy);
+      if (partner) {
+        partnerCommission = Math.floor(price * 0.1); // 10% commission
+        referredBy = partner._id;
+      }
+    }
+
+    // Update the order with commission info
+    order.partnerCommission = partnerCommission;
+    order.referredBy = referredBy;
+    await order.save();
+
+    // Create Stripe Checkout Session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
       line_items: [
         {
           price_data: {
             currency: "eur",
-            product_data: { name: `${plan} Plan` },
-            unit_amount: finalAmount, // Partner pays discounted price
+            product_data: {
+              name: `${plan} Plan`,
+            },
+            unit_amount: price,
           },
           quantity: 1,
         },
       ],
       mode: "payment",
-      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/cancel`,
+      success_url: `${process.env.FRONTEND_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}&order_id=${orderId}`,
+      cancel_url: `${process.env.FRONTEND_URL}/order?plan=${plan}`,
       metadata: {
         orderId: order._id.toString(),
-        partnerCode: isPartnerReferral ? referralCode : "none",
+        commission: partnerCommission.toString(),
+        partnerId: referredBy?.toString() || "none",
       },
     });
 
-    res.json({ url: session.url });
+    // Save session ID to order
+    order.stripeSessionId = session.id;
+    await order.save();
+
+    res.json({
+      url: session.url,
+      sessionId: session.id,
+    });
   } catch (error) {
-    res.status(500).json({ error: "Payment failed" });
+    console.error("Payment session error:", error);
+    res.status(500).json({
+      error: "Payment processing failed",
+      message: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
   }
 };
 // Add this to your orderController.js
@@ -250,7 +272,7 @@ exports.cancelPayment = async (req, res) => {
 };
 
 exports.handleWebhook = async (req, res) => {
-  const sig = req.headers["stripe-signature"];
+  const sig = req.headers['stripe-signature'];
   let event;
 
   try {
@@ -260,19 +282,39 @@ exports.handleWebhook = async (req, res) => {
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
-    console.error("Webhook verification failed:", err);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  switch (event.type) {
-    case "checkout.session.completed":
-      await handleCompletedSession(event.data.object);
-      break;
-    case "checkout.session.async_payment_failed":
-      await handleFailedSession(event.data.object);
-      break;
-    default:
-      console.log(`Unhandled event type: ${event.type}`);
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    
+    try {
+      const order = await Order.findByIdAndUpdate(
+        session.metadata.orderId,
+        {
+          status: 'completed',
+          paymentIntentId: session.payment_intent,
+          paymentConfirmedAt: new Date()
+        },
+        { new: true }
+      ).populate('client');
+
+      if (order?.partnerCommission > 0 && order.referredBy) {
+        await Partner.findByIdAndUpdate(
+          order.referredBy,
+          {
+            $inc: {
+              commissionEarned: order.partnerCommission,
+              ordersReferred: 1
+            },
+            $addToSet: { ordersReferred: order._id }
+          }
+        );
+      }
+
+    } catch (err) {
+      console.error('Webhook processing error:', err);
+    }
   }
 
   res.json({ received: true });
@@ -320,22 +362,6 @@ async function handleFailedSession(session) {
   });
 }
 
-async function handleCompletedSession(session) {
-  const order = await Order.findByIdAndUpdate(
-    session.client_reference_id,
-    {
-      status: "completed",
-      paymentConfirmedAt: new Date(),
-      stripePaymentIntentId: session.payment_intent,
-      paymentMethod: session.payment_method_types?.[0] || "card",
-    },
-    { new: true }
-  );
-
-  if (order) {
-    await emailService.sendPaymentConfirmationEmail(order);
-  }
-}
 
 async function handleFailedSession(session) {
   await Order.findByIdAndUpdate(session.client_reference_id, {
@@ -348,45 +374,76 @@ async function handleFailedSession(session) {
 exports.verifyPayment = async (req, res) => {
   try {
     const { sessionId } = req.params;
+    
+    // Retrieve the Stripe session
     const session = await stripe.checkout.sessions.retrieve(sessionId, {
-      expand: ["payment_intent"],
+      expand: ['payment_intent']
     });
 
-    if (!session.payment_intent || session.payment_status !== "paid") {
+    // Validate payment status
+    if (!session.payment_intent || session.payment_status !== 'paid') {
       return res.status(400).json({
         success: false,
-        message: "Payment not completed",
+        message: 'Payment not completed'
       });
     }
 
+    // Find and update the order
     const order = await Order.findOneAndUpdate(
       { stripeSessionId: sessionId },
       {
-        status: "completed",
-        paymentConfirmedAt: new Date(),
-        stripePaymentIntentId: session.payment_intent.id,
+        status: 'completed',
+        paymentIntentId: session.payment_intent.id,
+        paymentMethod: session.payment_method_types[0],
+        paymentConfirmedAt: new Date()
       },
       { new: true }
-    );
+    ).populate('client');
 
     if (!order) {
       return res.status(404).json({
         success: false,
-        message: "Order not found",
+        message: 'Order not found'
       });
     }
 
-    // Fire-and-forget email sending
-    emailService
-      .sendDualNotification(order)
-      .catch((e) => console.error("Post-verification email failed:", e));
+    // Handle referral commission if applicable
+    if (order.source === 'REFERRAL' && order.referredBy && !order.partnerCommission) {
+      const commission = Math.floor(order.originalPrice * 0.1); // 10% commission
+      order.partnerCommission = commission;
+      await order.save();
+      
+      await Partner.findByIdAndUpdate(order.referredBy, {
+        $inc: { 
+          commissionEarned: commission,
+          totalReferralSales: order.finalPrice
+        },
+        $addToSet: { 
+          clientsReferred: order.client._id,
+          ordersReferred: order._id 
+        }
+      });
+    }
 
-    res.json({ success: true, orderId: order._id });
+    // Send confirmation email (fire-and-forget)
+    if (order.customerDetails?.email) {
+      emailService.sendPaymentConfirmation(order)
+        .then(() => console.log('Confirmation email sent'))
+        .catch(err => console.error('Email sending failed:', err));
+    }
+
+    res.json({ 
+      success: true, 
+      orderId: order._id,
+      isReferral: order.source === 'REFERRAL'
+    });
+
   } catch (error) {
-    console.error("Payment verification error:", error);
+    console.error('Payment verification error:', error);
     res.status(500).json({
       success: false,
-      message: "Error verifying payment",
+      message: 'Error verifying payment',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };

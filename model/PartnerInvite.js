@@ -18,13 +18,18 @@ const inviteSchema = new mongoose.Schema({
   },
   expiresAt: {
     type: Date,
-    default: () => new Date(Date.now() + 10*365*24*60*60*1000) // 7 days
+    default: () => new Date(Date.now() + 10*365*24*60*60*1000) // 10 years
   },
   used: {
     type: Boolean,
     default: false
   },
-  usedAt: Date
+  usedAt: Date,
+  // Track the partner created from this invite
+  partnerCreated: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Partner'
+  }
 }, { timestamps: true });
 
 module.exports = mongoose.model('PartnerInvite', inviteSchema);

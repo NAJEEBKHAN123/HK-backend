@@ -1,94 +1,62 @@
 const mongoose = require('mongoose');
 
 const orderSchema = new mongoose.Schema({
-  // User Information
-  fullName: { 
-    type: String, 
-    required: [true, 'Full name is required'],
-    trim: true,
-    maxlength: [100, 'Name cannot exceed 100 characters']
-  },
-  email: {
+  source: {
     type: String,
-    required: [true, 'Email is required'],
-    trim: true,
-    lowercase: true,
-    match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Invalid email format']
+    required: true,
+    enum: ['DIRECT', 'REFERRAL'],
+    default: 'DIRECT'
   },
-  phone: {
-    type: String,
-    required: [true, 'Phone number is required'],
-    trim: true
+  client: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Client'
   },
-  birthday: {
-    type: Date,
-    required: [true, 'Birthday is required'],
-    validate: {
-      validator: (v) => v < new Date(),
-      message: 'Birthday must be in the past'
-    }
-  },
-  address: {
-    type: String,
-    required: [true, 'Address is required'],
-    trim: true,
-    maxlength: [200, 'Address cannot exceed 200 characters']
-  },
-  idImage: {
-    type: String,
-    required: [true, 'ID image URL is required']
-  },
-
-  // Order Details
   plan: {
     type: String,
-    required: [true, 'Plan type is required'],
-    enum: {
-      values: ['STARTER', 'TURNKEY', 'PREMIUM'],
-      message: 'Invalid plan type'
-    },
-    uppercase: true
+    required: true,
+    enum: ['STARTER', 'TURNKEY', 'PREMIUM']
   },
-  price: {
+  originalPrice: {
     type: Number,
-    required: [true, 'Price is required'],
-    min: [0, 'Price cannot be negative']
+    required: true
   },
-
-  // Payment Tracking
-  stripeSessionId: String,  // Removed index: true here
-  paymentIntentId: String,
-  paymentMethod: String,
-  transactionReference: String,
-
-  // Status Tracking
+  finalPrice: {
+    type: Number,
+    required: true
+  },
+  partnerCommission: {
+    type: Number,
+    default: 0
+  },
+  referredBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Partner'
+  },
+  referralCode: String,
   status: {
     type: String,
-    enum: ['pending', 'processing', 'completed', 'cancelled', 'failed'],
+    enum: ['pending', 'completed', 'cancelled', 'failed'],
     default: 'pending'
   },
-  cancellationReason: {
-    type: String,
-    enum: ['user_cancelled', 'payment_failed', 'expired', 'abandoned', 'other'],
-    default: null
+  customerDetails: {
+    fullName: String,
+    email: String,
+    phone: String,
+    address: String,
+    birthday: Date,
+    idImage: String
   },
-  referralCode: String, // Track which partner referred this order
-  discountedPrice: Number, // Store final price after discount
+  stripeSessionId: String,
+  paymentIntentId: String,
+  paymentMethod: String,
+  paymentConfirmedAt: Date
+}, { timestamps: true });
 
-  // Timestamps
-  paymentConfirmedAt: Date,
-  cancelledAt: Date,
-  failedAt: Date
-}, { 
-  timestamps: true,
-  toJSON: { virtuals: true },
-  toObject: { virtuals: true }
+orderSchema.pre('save', function(next) {
+  if (this.isModified('partnerCommission') || this.isModified('originalPrice')) {
+    this.finalPrice = this.originalPrice - (this.partnerCommission || 0);
+  }
+  next();
 });
-
-// Indexes (kept the schema.index version)
-orderSchema.index({ email: 1 });
-orderSchema.index({ status: 1 });
-orderSchema.index({ createdAt: -1 });
-orderSchema.index({ stripeSessionId: 1 });  // This is now the single definition
 
 module.exports = mongoose.model('Order', orderSchema);

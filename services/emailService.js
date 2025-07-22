@@ -1,3 +1,4 @@
+// services/emailService.js
 const nodemailer = require('nodemailer');
 
 class EmailService {
@@ -23,7 +24,6 @@ class EmailService {
       }
     });
 
-    this.emailLocks = new Map();
     this.verifyConnection().catch(err => {
       console.error('❌ SMTP verification failed:', err.message);
     });
@@ -35,54 +35,23 @@ class EmailService {
     console.log('✅ SMTP connection verified');
   }
 
-  async sendDualNotification(order) {
-    const lockKey = `order-${order._id}`;
-    
-    // Prevent duplicate processing for 1 hour
-    if (this.emailLocks.has(lockKey)) {
-      return null;
-    }
-
-    this.emailLocks.set(lockKey, true);
-    setTimeout(() => this.emailLocks.delete(lockKey), 3600000); // Clear after 1 hour
-
+  async sendPaymentConfirmation(order) {
     try {
-      // 1. Prepare client email
-      const clientEmail = {
-        from: `"${process.env.EMAIL_FROM_NAME}" <${process.env.EMAIL_FROM}>`,
-        to: order.email,
-        subject: `Payment Confirmation - Order #${order._id}`,
-        html: this.getClientEmailHtml(order),
-        text: this.getClientEmailText(order)
-      };
-
-      // 2. Prepare admin email (only if different from client)
-      let adminEmail = null;
-      if (process.env.ADMIN_EMAIL && 
-          process.env.ADMIN_EMAIL !== order.email &&
-          process.env.ADMIN_EMAIL !== process.env.EMAIL_FROM) {
-        adminEmail = {
-          from: `"${process.env.EMAIL_FROM_NAME}" <${process.env.EMAIL_FROM}>`,
-          to: process.env.ADMIN_EMAIL,
-          subject: `⚠ URGENT ‼ PAYMENT COMING - Order ID #${order._id}`,
-          html: this.getAdminEmailHtml(order),
-          text: this.getAdminEmailText(order)
-        };
+      if (!order.customerDetails?.email) {
+        throw new Error('No recipient email provided');
       }
 
-      // 3. Send emails
-      const results = await Promise.all([
-        this.sendEmail(clientEmail),
-        adminEmail ? this.sendEmail(adminEmail) : null
-      ].filter(Boolean));
-
-      return {
-        client: results[0],
-        admin: results[1] || null
+      const mailOptions = {
+        from: `"${process.env.EMAIL_FROM_NAME || 'Your Company'}" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
+        to: order.customerDetails.email,
+        subject: 'Order Confirmation',
+        html: this.getOrderConfirmationHtml(order),
+        text: this.getOrderConfirmationText(order)
       };
+
+      return await this.sendEmail(mailOptions);
     } catch (error) {
-      this.emailLocks.delete(lockKey);
-      console.error('Email sending failed:', error);
+      console.error('Payment confirmation email failed:', error);
       throw error;
     }
   }
@@ -99,6 +68,7 @@ class EmailService {
 
     try {
       const info = await this.transporter.sendMail(mailOptions);
+      console.log('✅ Email sent:', info.messageId);
       return info;
     } catch (error) {
       console.error('❌ Email failed to send:', {
@@ -109,24 +79,15 @@ class EmailService {
     }
   }
 
-  // Template methods
-  getClientEmailHtml(order) {
+  getOrderConfirmationHtml(order) {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: #4CAF50;">Payment Successful!</h2>
-        ${this.getOrderDetailsHtml(order)}
-        ${this.getFooterHtml()}
-      </div>
-    `;
-  }
-
-  getAdminEmailHtml(order) {
-    return `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #2196F3;">New Payment Received</h2>
-        <table style="width: 100%; border-collapse: collapse;">
+        <p>Thank you for your order. Here are your order details:</p>
+        
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
           <tr>
-            <td style="padding: 8px; border: 1px solid #ddd; width: 30%;"><strong>Order Id #</strong></td>
+            <td style="padding: 8px; border: 1px solid #ddd; width: 30%;"><strong>Order ID</strong></td>
             <td style="padding: 8px; border: 1px solid #ddd;">${order._id}</td>
           </tr>
           <tr>
@@ -135,65 +96,41 @@ class EmailService {
           </tr>
           <tr>
             <td style="padding: 8px; border: 1px solid #ddd;"><strong>Amount</strong></td>
-            <td style="padding: 8px; border: 1px solid #ddd;">${this.formatCurrency(order.price)}</td>
+            <td style="padding: 8px; border: 1px solid #ddd;">${this.formatCurrency(order.finalPrice || order.amount)}</td>
           </tr>
           <tr>
-            <td style="padding: 8px; border: 1px solid #ddd;"><strong>Client Name</strong></td>
-            <td style="padding: 8px; border: 1px solid #ddd;">${order.fullName}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px; border: 1px solid #ddd;"><strong>Client Email</strong></td>
-            <td style="padding: 8px; border: 1px solid #ddd;">(${order.email})</td>
+            <td style="padding: 8px; border: 1px solid #ddd;"><strong>Date</strong></td>
+            <td style="padding: 8px; border: 1px solid #ddd;">${new Date(order.createdAt).toLocaleString()}</td>
           </tr>
         </table>
+
+        <p>If you have any questions, please contact our support team.</p>
+        
+        <div style="margin-top: 30px; font-size: 12px; color: #777;">
+          <p>© ${new Date().getFullYear()} ${process.env.EMAIL_FROM_NAME || 'Your Company'}. All rights reserved.</p>
+        </div>
       </div>
     `;
   }
 
-  getOrderDetailsHtml(order) {
+  getOrderConfirmationText(order) {
     return `
-      <table style="width: 100%; border-collapse: collapse;">
-       <tr>
-          <td style="padding: 8px; border: 1px solid #ddd; width: 30%;"><strong>Order Id #</strong></td>
-          <td style="padding: 8px; border: 1px solid #ddd;">${order._id}</td>
-        </tr>
-        <tr>
-          <td style="padding: 8px; border: 1px solid #ddd; width: 30%;"><strong>Plan</strong></td>
-          <td style="padding: 8px; border: 1px solid #ddd;">${order.plan}</td>
-        </tr>
-        <tr>
-          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Amount</strong></td>
-          <td style="padding: 8px; border: 1px solid #ddd;">${this.formatCurrency(order.price)}</td>
-        </tr>
-      </table>
+      Payment Successful!
+      
+      Order ID: ${order._id}
+      Plan: ${order.plan}
+      Amount: ${this.formatCurrency(order.finalPrice || order.amount)}
+      Date: ${new Date(order.createdAt).toLocaleString()}
+      
+      Thank you for your order!
     `;
-  }
-
-  getFooterHtml() {
-    return `
-      <div style="margin-top: 30px; font-size: 12px; color: #777;">
-        <p>© ${new Date().getFullYear()} ${process.env.EMAIL_FROM_NAME}. All rights reserved.</p>
-      </div>
-    `;
-  }
-
-  getClientEmailText(order) {
-    return `Payment Successful!\n\nOrder #${order._id}\nPlan: ${order.plan}\nAmount: ${this.formatCurrency(order.price)}\n\nView your order: ${this.getOrderUrl(order._id)}`;
-  }
-
-  getAdminEmailText(order) {
-    return `New Payment Received\n\nOrder #${order._id}\nPlan: ${order.plan}\nAmount: ${this.formatCurrency(order.price)}\nClient: ${order.fullName || 'N/A'} (${order.email})\nPayment ID: ${order.stripePaymentIntentId || 'Processing...'}`;
-  }
-
-  getOrderUrl(orderId) {
-    return `${process.env.FRONTEND_URL}/orders/${orderId}`;
   }
 
   formatCurrency(amount) {
     return new Intl.NumberFormat('en-US', { 
       style: 'currency', 
       currency: 'EUR' 
-    }).format(amount);
+    }).format(amount / 100);
   }
 }
 
