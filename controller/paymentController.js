@@ -142,6 +142,7 @@ exports.downloadReceipt = async (req, res) => {
   }
 };
 // controllers/paymentController.js
+// controllers/paymentController.js
 exports.createPaymentSession = async (req, res) => {
   try {
     const { orderId } = req.body;
@@ -160,16 +161,24 @@ exports.createPaymentSession = async (req, res) => {
     }
 
     const client = order.client;
-    const price = order.finalPrice || order.originalPrice;
+    const price = order.finalPrice || order.originalPrice; // Assumes EUR (e.g., 4600)
+    const stripeAmount = Math.round(price * 100); // Stripe expects amount in cents (e.g., 460000)
+
     const plan = order.plan;
+
+    // Warn if price seems too low
+    if (price < 1000) {
+      console.warn(`⚠️ Suspiciously low price: ${price} EUR for order ${orderId}`);
+    }
 
     let partnerCommission = 0;
     let referredBy = null;
 
+    // Calculate partner commission if referred
     if (client?.referredBy) {
       const partner = await Partner.findById(client.referredBy);
       if (partner) {
-        partnerCommission = Math.floor(price * 0.1); // 10% commission
+        partnerCommission = Math.floor(price * 0.1); // 10% of price in EUR
         referredBy = partner._id;
       }
     }
@@ -189,18 +198,19 @@ exports.createPaymentSession = async (req, res) => {
             product_data: {
               name: `${plan} Plan`,
             },
-            unit_amount: price,
+            unit_amount: stripeAmount, // Amount in cents (e.g., 460000)
           },
           quantity: 1,
         },
       ],
       mode: "payment",
       success_url: `${process.env.FRONTEND_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}&order_id=${orderId}`,
-      cancel_url: `${process.env.FRONTEND_URL}/order?plan=${plan}`,
+      cancel_url: `${process.env.FRONTEND_URL}/payment-cancelled?plan=${plan}`,
       metadata: {
         orderId: order._id.toString(),
         commission: partnerCommission.toString(),
         partnerId: referredBy?.toString() || "none",
+        displayAmount: `€${price.toLocaleString('en-EU', { minimumFractionDigits: 2 })}`,
       },
     });
 
@@ -211,6 +221,7 @@ exports.createPaymentSession = async (req, res) => {
     res.json({
       url: session.url,
       sessionId: session.id,
+      displayAmount: `€${price.toLocaleString('en-EU', { minimumFractionDigits: 2 })}`,
     });
   } catch (error) {
     console.error("Payment session error:", error);
@@ -220,6 +231,7 @@ exports.createPaymentSession = async (req, res) => {
     });
   }
 };
+
 // Add this to your orderController.js
 exports.cancelPayment = async (req, res) => {
   try {
@@ -282,6 +294,7 @@ exports.handleWebhook = async (req, res) => {
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
+    console.error('Webhook signature verification failed:', err);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
@@ -294,7 +307,9 @@ exports.handleWebhook = async (req, res) => {
         {
           status: 'completed',
           paymentIntentId: session.payment_intent,
-          paymentConfirmedAt: new Date()
+          paymentConfirmedAt: new Date(),
+          paymentMethod: session.payment_method_types[0],
+          amountPaid: session.amount_total // Store the actual amount paid
         },
         { new: true }
       ).populate('client');
@@ -305,7 +320,7 @@ exports.handleWebhook = async (req, res) => {
           {
             $inc: {
               commissionEarned: order.partnerCommission,
-              ordersReferred: 1
+              totalReferralSales: order.amountPaid || order.finalPrice
             },
             $addToSet: { ordersReferred: order._id }
           }

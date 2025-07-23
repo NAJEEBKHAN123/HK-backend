@@ -21,21 +21,20 @@ const handleErrorResponse = (res, error, action) => {
   });
 };
 
-
-
-
 exports.createOrder = async (req, res) => {
   try {
+    console.log("creaeting order ", req.body)
     const { plan, customerDetails, referralCode, clientId } = req.body;
 
     // Validate required fields
-    if (!plan || !customerDetails) {
+    if (!plan || !customerDetails || !customerDetails.email) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: plan and customerDetails'
+        message: 'Missing required fields'
       });
     }
 
+    // Validate plan exists
     if (!PRICING[plan]) {
       return res.status(400).json({
         success: false,
@@ -43,65 +42,43 @@ exports.createOrder = async (req, res) => {
       });
     }
 
-    // Initialize with DIRECT order defaults
+    // Initialize order data with DIRECT defaults
     const orderData = {
       plan,
       customerDetails,
       originalPrice: PRICING[plan],
       finalPrice: PRICING[plan],
+      partnerCommission: 0,
       status: 'pending',
       source: 'DIRECT',
-      partnerCommission: 0,
       referredBy: null,
       referralCode: null,
       client: clientId || null
     };
 
-    // ONLY process as referral if ALL conditions are met:
-    // 1. Explicit referralCode is provided in the current request
-    // 2. The code matches an active partner
+    // Process referral if valid code provided
     if (referralCode) {
       const partner = await Partner.findOne({
-        referralCode: referralCode,
+        referralCode,
         status: 'active'
       });
 
       if (partner) {
+        // Calculate commission and adjust pricing
         const commission = Math.floor(PRICING[plan] * COMMISSION_RATE);
+        
         orderData.source = 'REFERRAL';
         orderData.referredBy = partner._id;
         orderData.referralCode = partner.referralCode;
         orderData.partnerCommission = commission;
-        orderData.finalPrice = PRICING[plan] - commission;
-        
-        console.log('Referral applied from current order:', {
-          partner: partner._id,
-          commission: commission,
-          finalPrice: orderData.finalPrice
-        });
+        orderData.finalPrice = PRICING[plan]; 
       }
     }
 
-    // Final validation to ensure direct orders have no commission
-    if (!orderData.referralCode) {
-      orderData.source = 'DIRECT';
-      orderData.partnerCommission = 0;
-      orderData.referredBy = null;
-      orderData.finalPrice = PRICING[plan];
-    }
-
-    console.log('Creating order with:', {
-      plan: orderData.plan,
-      source: orderData.source,
-      finalPrice: orderData.finalPrice,
-      commission: orderData.partnerCommission,
-      hasReferral: orderData.referralCode !== null
-    });
-
-    // Create the order
+    // Create and save the order
     const order = await Order.create(orderData);
 
-    // Stripe session creation
+    // Create Stripe session with correct final price
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
@@ -118,9 +95,13 @@ exports.createOrder = async (req, res) => {
       mode: 'payment',
       success_url: `${process.env.FRONTEND_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}&order_id=${order._id}`,
       cancel_url: `${process.env.FRONTEND_URL}/payment-cancelled`,
+      customer_email: order.customerDetails.email,
       metadata: {
         orderId: order._id.toString(),
-        isReferral: orderData.source === 'REFERRAL'
+        source: order.source,
+        referralCode: order.referralCode || '',
+        partnerId: order.referredBy?.toString() || '',
+        commission: order.partnerCommission.toString()
       }
     });
 
@@ -132,61 +113,24 @@ exports.createOrder = async (req, res) => {
       success: true,
       url: session.url,
       orderId: order._id,
-      isReferral: orderData.source === 'REFERRAL',
-      finalPrice: orderData.finalPrice,
-      commission: orderData.partnerCommission
+      orderDetails: {
+        plan: order.plan,
+        originalPrice: order.originalPrice,
+        finalPrice: order.finalPrice,
+        commission: order.partnerCommission,
+        source: order.source
+      }
     });
 
   } catch (error) {
-    console.error('Order creation failed:', error);
+    handleErrorResponse(res, error, 'create order');
+    console.log("error in creating order", error)
     res.status(500).json({
-      success: false,
-      message: 'Order creation failed',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+      messsage: "Error in creating order"
+    })
   }
 };
 
-exports.handleWebhook = async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  let event;
-
-  try {
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
-  } catch (err) {
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
-
-  switch (event.type) {
-    case 'checkout.session.completed':
-      const session = event.data.object;
-      await Order.findOneAndUpdate(
-        { stripeSessionId: session.id },
-        {
-          status: 'completed',
-          paymentIntentId: session.payment_intent,
-          paymentConfirmedAt: new Date()
-        }
-      );
-      break;
-
-    case 'checkout.session.async_payment_failed':
-      const failedSession = event.data.object;
-      await Order.findOneAndUpdate(
-        { stripeSessionId: failedSession.id },
-        { status: 'failed' }
-      );
-      break;
-  }
-
-  res.json({ received: true });
-};
-
-// Handle successful payment webhook
 exports.handleStripeWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -198,59 +142,56 @@ exports.handleStripeWebhook = async (req, res) => {
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
-    console.error('Webhook signature verification failed:', err.message);
+    console.error('Webhook signature verification failed:', err);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Handle payment events
-  switch (event.type) {
-    case 'checkout.session.completed':
-      const session = event.data.object;
-      
-      try {
-        const order = await Order.findOneAndUpdate(
-          { stripeSessionId: session.id },
-          {
-            status: 'completed',
-            paymentIntentId: session.payment_intent,
-            paymentMethod: session.payment_method_types[0],
-            paymentConfirmedAt: new Date()
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    
+    try {
+      const order = await Order.findOneAndUpdate(
+        { stripeSessionId: session.id },
+        {
+          status: 'completed',
+          paymentIntentId: session.payment_intent,
+          paymentMethod: session.payment_method_types[0],
+          paymentConfirmedAt: new Date()
+        },
+        { new: true }
+      ).populate('referredBy');
+
+      // Process commission for referral orders
+      if (order?.source === 'REFERRAL' && order.referredBy) {
+        // Transfer commission to partner's Stripe account
+        await stripe.transfers.create({
+          amount: order.partnerCommission * 100,
+          currency: 'eur',
+          destination: order.referredBy.stripeAccountId,
+          description: `Commission for order ${order._id}`
+        });
+
+        // Update partner stats
+        await Partner.findByIdAndUpdate(order.referredBy._id, {
+          $inc: { 
+            commissionEarned: order.partnerCommission,
+            totalReferralSales: order.finalPrice
           },
-          { new: true }
-        ).populate('client');
-
-        // If this was a referral order, update partner stats
-        if (order?.referredBy) {
-          await Partner.findByIdAndUpdate(order.referredBy, {
-            $inc: { 
-              commissionEarned: order.partnerCommission,
-              totalReferralSales: order.finalPrice
-            },
-            $addToSet: { 
-              clientsReferred: order.client._id,
-              ordersReferred: order._id 
-            }
-          });
-        }
-      } catch (err) {
-        console.error('Error processing completed session:', err);
+          $addToSet: { 
+            ordersReferred: order._id 
+          }
+        });
       }
-      break;
-
-    case 'checkout.session.async_payment_failed':
-      const failedSession = event.data.object;
-      await Order.findOneAndUpdate(
-        { stripeSessionId: failedSession.id },
-        { 
-          status: 'failed',
-          cancellationReason: 'payment_failed'
-        }
-      );
-      break;
+    } catch (err) {
+      console.error('Error processing completed session:', err);
+    }
   }
 
   res.json({ received: true });
 };
+
+// Handle successful payment webhook
+
 
 
 // Get all orders (admin)

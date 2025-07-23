@@ -1,30 +1,23 @@
-// Run this using: node scripts/resetReferralData.js
-import mongoose from 'mongoose';
-import Order from '../model/Order.js';
-import Client from '../model/Client.js';
-import dotenv from 'dotenv';
+// deleteAllOrders.js
 
-dotenv.config();
-await mongoose.connect(process.env.MONGO_URI);
+const mongoose = require('mongoose');
+const Order = require('../model/Order'); // Adjust path if needed
 
-// Reset all orders
-await Order.updateMany({}, {
-  $set: {
-    source: 'DIRECT',
-    partnerCommission: 0,
-    referralCode: null,
-    referredBy: null
+// ✅ Use your actual Atlas DB URI
+const MONGO_URI = 'mongodb+srv://najeebkhan:najeebkhan12@user-management-cluster.zkw9a.mongodb.net/CareerSociete?retryWrites=true&w=majority&appName=user-management-cluster';
+
+const deleteOrders = async () => {
+  try {
+    await mongoose.connect(MONGO_URI);
+
+    const result = await Order.deleteMany({});
+    console.log(`✅ Deleted ${result.deletedCount} orders`);
+
+    await mongoose.disconnect();
+    console.log("✅ Disconnected from DB");
+  } catch (err) {
+    console.error("❌ Error deleting orders:", err);
   }
-});
+};
 
-// Remove referral fields from clients
-await Client.updateMany({}, {
-  $unset: {
-    source: '',
-    referralCode: '',
-    referredBy: ''
-  }
-});
-
-console.log("✅ Referral data reset");
-process.exit();
+deleteOrders();

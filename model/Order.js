@@ -7,12 +7,12 @@ const orderSchema = new mongoose.Schema({
     enum: ['STARTER', 'TURNKEY', 'PREMIUM']
   },
   customerDetails: {
-    fullName: String,
-    email: String,
+    fullName: { type: String, required: true },
+    email: { type: String, required: true },
     phone: String,
     address: String,
     birthday: Date,
-    idImage: String
+    idImage: { type: String, required: true }
   },
   originalPrice: {
     type: Number,
@@ -38,12 +38,17 @@ const orderSchema = new mongoose.Schema({
   },
   referredBy: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Partner'
+    ref: 'Partner',
+    default: null
   },
-  referralCode: String,
+  referralCode: {
+    type: String,
+    default: null
+  },
   client: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Client'
+    ref: 'Client',
+    default: null
   },
   stripeSessionId: String,
   paymentIntentId: String,
@@ -51,15 +56,32 @@ const orderSchema = new mongoose.Schema({
   paymentConfirmedAt: Date,
   cancellationReason: String
 }, {
-  timestamps: true
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
 });
 
-// Add indexes for better query performance
+// Pre-save hook for price calculations
+orderSchema.pre('save', function(next) {
+  // For referral orders, calculate final price
+  if (this.source === 'REFERRAL' && this.partnerCommission > 0) {
+    this.finalPrice = this.originalPrice - this.partnerCommission;
+  } else {
+    // For direct orders, ensure proper defaults
+    this.partnerCommission = 0;
+    this.finalPrice = this.originalPrice;
+    this.referredBy = null;
+    this.referralCode = null;
+    this.source = 'DIRECT';
+  }
+  next();
+});
+
+// Indexes for better query performance
 orderSchema.index({ client: 1 });
 orderSchema.index({ referredBy: 1 });
 orderSchema.index({ status: 1 });
 orderSchema.index({ createdAt: -1 });
+orderSchema.index({ 'customerDetails.email': 1 });
 
-const Order = mongoose.model('Order', orderSchema);
-
-module.exports = Order;
+module.exports = mongoose.model('Order', orderSchema);
