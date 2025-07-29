@@ -3,7 +3,8 @@ const PartnerInvite = require('../model/PartnerInvite');
 const Client = require('../model/Client');
 const { sendEmail } = require('../services/partnerEmailService');
 const crypto = require('crypto');
-
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 // Generate partner invite credentials
 exports.generatePartnerCredential = async (req, res) => {
   try {
@@ -133,6 +134,120 @@ exports.registerPartner = async (req, res) => {
   }
 };
 
+// In your partnerController.js
+exports.loginPartner = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    // Validate input
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide email and password'
+      });
+    }
+
+    // Check if partner exists
+    const partner = await Partner.findOne({ email }).select('+password');
+    if (!partner) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid credentials'
+      });
+    }
+
+    // Check password
+    const isMatch = await partner.comparePassword(password);
+    if (!isMatch) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid credentials'
+      });
+    }
+
+    // Create token
+    const token = jwt.sign(
+      { id: partner._id, role: 'partner' },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRE || '30d' }
+    );
+
+    // Set cookie options
+    const cookieOptions = {
+      expires: new Date(
+        Date.now() + (process.env.JWT_COOKIE_EXPIRE || 30) * 24 * 60 * 60 * 1000
+      ),
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production'
+    };
+
+    // Send response
+    res
+      .status(200)
+      .cookie('token', token, cookieOptions)
+      .json({
+        success: true,
+        token,
+        partner: {
+          id: partner._id,
+          name: partner.name,
+          email: partner.email,
+          referralCode: partner.referralCode
+        }
+      });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Login failed',
+      details: error.message
+    });
+  }
+};
+
+// Logout partner
+exports.logoutPartner = async (req, res) => {
+  res.cookie('token', 'none', {
+    expires: new Date(Date.now() + 10 * 1000),
+    httpOnly: true
+  });
+
+  res.status(200).json({
+    success: true,
+    message: 'Logged out successfully'
+  });
+};
+
+// Get current logged in partner
+exports.getCurrentPartner = async (req, res) => {
+  try {
+    const partner = await Partner.findById(req.partner.id);
+
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      partner: {
+        id: partner._id,
+        name: partner.name,
+        email: partner.email,
+        referralCode: partner.referralCode
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch partner',
+      details: error.message
+    });
+  }
+};
+
 // Verify partner invite
 exports.verifyInvite = async (req, res) => {
   try {
@@ -162,6 +277,37 @@ exports.verifyInvite = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       valid: false,
+      error: 'Verification failed',
+      details: error.message
+    });
+  }
+};
+
+exports.verifyPartners = async (req, res) => {
+  try {
+    const partner = await Partner.findById(req.partner.id)
+      .select('-password')
+      .lean();
+
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      partner: {
+        id: partner._id,
+        name: partner.name,
+        email: partner.email,
+        referralCode: partner.referralCode
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
       error: 'Verification failed',
       details: error.message
     });
@@ -205,9 +351,24 @@ exports.verifyReferral = async (req, res) => {
 // Get partner dashboard data
 exports.getPartnerDashboard = async (req, res) => {
   try {
+    if (!req.partner?.id) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized - No partner ID found'
+      });
+    }
+
     const partner = await Partner.findById(req.partner.id)
-      .populate('clientsReferred', 'name email createdAt')
-      .populate('ordersReferred', 'plan finalPrice createdAt');
+      .populate({
+        path: 'clientsReferred',
+        select: 'name email createdAt source orders',
+        options: { sort: { createdAt: -1 } }
+      })
+      .populate({
+        path: 'ordersReferred',
+        select: 'plan finalPrice createdAt status',
+        options: { sort: { createdAt: -1 } }
+      });
 
     if (!partner) {
       return res.status(404).json({
@@ -232,22 +393,23 @@ exports.getPartnerDashboard = async (req, res) => {
           totalClientsReferred: partner.totalClientsReferred,
           totalOrdersReferred: partner.totalOrdersReferred,
           referralClicks: partner.referralClicks,
-          conversionRate: partner.conversionRate
+          conversionRate: partner.conversionRate,
+          totalReferralSales: partner.totalReferralSales
         },
-        clients: partner.clientsReferred,
-        orders: partner.ordersReferred
+        clients: partner.clientsReferred || [],
+        orders: partner.ordersReferred || []
       }
     });
 
   } catch (error) {
+    console.error('Dashboard error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch partner data',
-      details: error.message
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
-
 // Request commission payout
 exports.requestPayout = async (req, res) => {
   try {
@@ -292,6 +454,246 @@ exports.requestPayout = async (req, res) => {
       success: false,
       error: 'Payout request failed',
       details: error.message
+    });
+  }
+};
+
+
+// Get all partners for admin dashboard
+exports.getAllPartners = async (req, res) => {
+  try {
+    const { page = 1, limit = 10, search = '' } = req.query;
+    const skip = (page - 1) * limit;
+
+    const query = {};
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { referralCode: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const partners = await Partner.find(query)
+      .select('name email referralCode status createdAt commissionEarned commissionPaid totalClientsReferred referralClicks')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Partner.countDocuments(query);
+
+    res.json({
+      success: true,
+      count: partners.length,
+      total,
+      page: Number(page),
+      pages: Math.ceil(total / limit),
+      partners
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch partners'
+    });
+  }
+};
+
+// Get detailed partner info for admin
+// In partnerController.js
+exports.getAdminPartnerDetails = async (req, res) => {
+  try {
+    if (!req.admin?.id) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized - Admin access required'
+      });
+    }
+
+    // Get the partner document without lean first
+    const partnerDoc = await Partner.findById(req.params.id)
+      .populate('clientsReferred', 'name email createdAt')
+      .populate('ordersReferred', 'plan finalPrice createdAt');
+
+    if (!partnerDoc) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found'
+      });
+    }
+
+    // Convert to object and manually add virtuals if needed
+    const partner = partnerDoc.toObject({ virtuals: true });
+
+    // Calculate virtuals manually as fallback
+    const totalClientsReferred = partner.clientsReferred?.length || 0;
+    const totalOrdersReferred = partner.ordersReferred?.length || 0;
+    const conversionRate = partner.referralClicks > 0 
+      ? parseFloat(((totalClientsReferred / partner.referralClicks) * 100).toFixed(2))
+      : 0;
+
+    res.json({
+      success: true,
+      partner: {
+        id: partner._id,
+        name: partner.name,
+        email: partner.email,
+        referralCode: partner.referralCode,
+        referralLink: partner.referralLink,
+        status: partner.status,
+        commissionEarned: partner.commissionEarned || 0,
+        commissionPaid: partner.commissionPaid || 0,
+        availableCommission: partner.availableCommission || 0,
+        totalClientsReferred: partner.totalClientsReferred || totalClientsReferred,
+        totalOrdersReferred: partner.totalOrdersReferred || totalOrdersReferred,
+        referralClicks: partner.referralClicks || 0,
+        conversionRate: partner.conversionRate || conversionRate,
+        totalReferralSales: partner.totalReferralSales || 0,
+        createdAt: partner.createdAt,
+        referredBy: partner.referredBy
+      },
+      clients: partner.clientsReferred || [],
+      orders: partner.ordersReferred || []
+    });
+
+  } catch (error) {
+    console.error('Partner detail error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch partner details',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Get partner statistics for admin dashboard
+exports.getPartnerStats = async (req, res) => {
+  try {
+    const stats = await Partner.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalPartners: { $sum: 1 },
+          activePartners: { $sum: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] } },
+          totalCommission: { $sum: '$commissionEarned' },
+          totalPaid: { $sum: '$commissionPaid' },
+          totalClients: { $sum: '$totalClientsReferred' },
+          totalClicks: { $sum: '$referralClicks' }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          totalPartners: 1,
+          activePartners: 1,
+          inactivePartners: { $subtract: ['$totalPartners', '$activePartners'] },
+          totalCommission: 1,
+          totalPaid: 1,
+          pendingPayout: { $subtract: ['$totalCommission', '$totalPaid'] },
+          totalClients: 1,
+          totalClicks: 1,
+          avgClientsPerPartner: { $divide: ['$totalClients', '$totalPartners'] },
+          conversionRate: { $multiply: [{ $divide: ['$totalClients', '$totalClicks'] }, 100] }
+        }
+      }
+    ]);
+
+    res.json({
+      success: true,
+      stats: stats[0] || {}
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch partner stats'
+    });
+  }
+};
+
+// Update partner status (admin only)
+exports.updatePartnerStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    const partner = await Partner.findByIdAndUpdate(
+      req.params.id,
+      { status },
+      { new: true }
+    );
+
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found'
+      });
+    }
+
+    await sendEmail({
+      to: partner.email,
+      subject: `Partner Account Status Update`,
+      html: `Your partner account status has been updated to <strong>${status}</strong>.`
+    });
+
+    res.json({
+      success: true,
+      partner
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update partner status'
+    });
+  }
+};
+
+// Admin-initiated payout
+exports.adminProcessPayout = async (req, res) => {
+  try {
+    const { amount, notes } = req.body;
+    const partner = await Partner.findById(req.params.id);
+
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found'
+      });
+    }
+
+    const availableCommission = (partner.commissionEarned || 0) - (partner.commissionPaid || 0);
+    
+    if (amount > availableCommission) {
+      return res.status(400).json({
+        success: false,
+        error: 'Payout amount exceeds available commission'
+      });
+    }
+
+    // Update partner commission
+    partner.commissionPaid += amount;
+    await partner.save();
+
+    // Create payout record (you'll need a Payout model)
+    const payout = await Payout.create({
+      partner: partner._id,
+      amount,
+      notes,
+      processedBy: req.admin.id,
+      status: 'completed'
+    });
+
+    await sendEmail({
+      to: partner.email,
+      subject: `Payout Processed by Admin`,
+      html: `An admin has processed a payout of $${(amount / 100).toFixed(2)} for your account.`
+    });
+
+    res.json({
+      success: true,
+      payout,
+      partner
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to process payout'
     });
   }
 };

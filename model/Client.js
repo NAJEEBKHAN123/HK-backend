@@ -32,10 +32,12 @@ const clientSchema = new mongoose.Schema({
     default: 'DIRECT'
   },
   referralCode: String,
-  orders: [{
+
+  orders: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Order'
-  }]
+    ref: 'Order',
+    default: null
+  }
 }, {
   timestamps: true,
   toJSON: { virtuals: true },

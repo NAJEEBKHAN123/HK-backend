@@ -6,6 +6,13 @@ const PDFDocument = require("pdfkit");
 const emailService = require("../services/emailService");
 const Partner = require('../model/Partner.js')
 
+
+const PRICING = {
+  STARTER: 3900,
+  TURNKEY: 4600,
+  PREMIUM: 9800
+};
+const COMMISSION_RATE = 0.10; // 10%
 exports.generateDownloadToken = async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -56,6 +63,7 @@ exports.downloadReceipt = async (req, res) => {
   try {
     const { orderId } = req.params;
     const { token, timestamp } = req.query;
+  
 
     // Verify token and timestamp
     jwt.verify(token, process.env.DOWNLOAD_SECRET, (err, decoded) => {
@@ -68,6 +76,7 @@ exports.downloadReceipt = async (req, res) => {
     });
 
     const order = await Order.findById(orderId);
+
     if (!order) {
       return res.status(404).json({
         success: false,
@@ -91,7 +100,7 @@ exports.downloadReceipt = async (req, res) => {
     // Header
     doc.fontSize(20).text("PAYMENT RECEIPT", { align: "center" });
     doc.moveDown(0.5);
-    doc.fontSize(10).text(`Receipt #: ${order._id}`, { align: "center" });
+    doc.fontSize(10).text(`Receipt ID#: ${order._id}`, { align: "center" });
 
     // Add exact time here - modified line
     const receiptDate = new Date(order.createdAt);
@@ -107,9 +116,9 @@ exports.downloadReceipt = async (req, res) => {
 
     // Customer Info
     doc.fontSize(12).text("CUSTOMER INFORMATION", { underline: true });
-    doc.fontSize(10).text(`Name: ${order.fullName}`);
-    doc.text(`Email: ${order.email}`);
-    if (order.phone) doc.text(`Phone: ${order.phone}`);
+    doc.fontSize(10).text(`Name: ${order.customerDetails.fullName}`);
+    doc.text(`Email: ${order.customerDetails.email}`);
+    if (order.phone) doc.text(`Phone: ${order.customerDetails.phone}`);
     doc.moveDown(1);
 
     // Order Details
@@ -119,7 +128,7 @@ exports.downloadReceipt = async (req, res) => {
       `Amount: ${new Intl.NumberFormat("en-US", {
         style: "currency",
         currency: "EUR",
-      }).format(order.price)}`
+      }).format(order.originalPrice)}`
     );
     doc.text(`Payment Status: ${order.status.toUpperCase()}`);
     doc.moveDown(1);
@@ -131,6 +140,7 @@ exports.downloadReceipt = async (req, res) => {
     doc.text("If you have any questions, please contact our support team.", {
       align: "center",
     });
+     doc.fontSize(10).text("Email: bonjour@ouvrir-societe-hong-kong.fr", { align: "center" });
 
     doc.end();
   } catch (error) {
@@ -142,7 +152,8 @@ exports.downloadReceipt = async (req, res) => {
   }
 };
 // controllers/paymentController.js
-// controllers/paymentController.js
+
+
 exports.createPaymentSession = async (req, res) => {
   try {
     const { orderId } = req.body;
@@ -153,42 +164,15 @@ exports.createPaymentSession = async (req, res) => {
       });
     }
 
-    // Get order and populate client details
-    const order = await Order.findById(orderId).populate("client");
-
+    const order = await Order.findById(orderId).populate('client');
     if (!order) {
       return res.status(404).json({ error: "Order not found" });
     }
 
-    const client = order.client;
-    const price = order.finalPrice || order.originalPrice; // Assumes EUR (e.g., 4600)
-    const stripeAmount = Math.round(price * 100); // Stripe expects amount in cents (e.g., 460000)
+    // Always use originalPrice for payment amount
+    const stripeAmount = order.originalPrice * 100; // Convert to cents
 
-    const plan = order.plan;
-
-    // Warn if price seems too low
-    if (price < 1000) {
-      console.warn(`⚠️ Suspiciously low price: ${price} EUR for order ${orderId}`);
-    }
-
-    let partnerCommission = 0;
-    let referredBy = null;
-
-    // Calculate partner commission if referred
-    if (client?.referredBy) {
-      const partner = await Partner.findById(client.referredBy);
-      if (partner) {
-        partnerCommission = Math.floor(price * 0.1); // 10% of price in EUR
-        referredBy = partner._id;
-      }
-    }
-
-    // Update the order with commission info
-    order.partnerCommission = partnerCommission;
-    order.referredBy = referredBy;
-    await order.save();
-
-    // Create Stripe Checkout Session
+    // Create Stripe session with FULL original price
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
       line_items: [
@@ -196,22 +180,24 @@ exports.createPaymentSession = async (req, res) => {
           price_data: {
             currency: "eur",
             product_data: {
-              name: `${plan} Plan`,
+              name: `${order.plan} Plan`,
+              description: 'Company Formation Package'
             },
-            unit_amount: stripeAmount, // Amount in cents (e.g., 460000)
+            unit_amount: stripeAmount,
           },
           quantity: 1,
         },
       ],
       mode: "payment",
       success_url: `${process.env.FRONTEND_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}&order_id=${orderId}`,
-      cancel_url: `${process.env.FRONTEND_URL}/payment-cancelled?plan=${plan}`,
+      cancel_url: `${process.env.FRONTEND_URL}/payment-cancelled`,
+      customer_email: order.customerDetails.email,
       metadata: {
         orderId: order._id.toString(),
-        commission: partnerCommission.toString(),
-        partnerId: referredBy?.toString() || "none",
-        displayAmount: `€${price.toLocaleString('en-EU', { minimumFractionDigits: 2 })}`,
-      },
+        source: order.source,
+        referralCode: order.referralCode || '',
+        partnerId: order.referredBy?.toString() || ''
+      }
     });
 
     // Save session ID to order
@@ -221,8 +207,9 @@ exports.createPaymentSession = async (req, res) => {
     res.json({
       url: session.url,
       sessionId: session.id,
-      displayAmount: `€${price.toLocaleString('en-EU', { minimumFractionDigits: 2 })}`,
+      amount: order.originalPrice // Show full price to client
     });
+
   } catch (error) {
     console.error("Payment session error:", error);
     res.status(500).json({
@@ -232,11 +219,85 @@ exports.createPaymentSession = async (req, res) => {
   }
 };
 
+exports.handleWebhook = async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.rawBody,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error('Webhook signature verification failed:', err);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    
+    try {
+      const order = await Order.findOneAndUpdate(
+        { stripeSessionId: session.id },
+        {
+          status: 'completed',
+          paymentIntentId: session.payment_intent,
+          paymentConfirmedAt: new Date(),
+          paymentMethod: session.payment_method_types[0]
+        },
+        { new: true }
+      ).populate('referredBy');
+
+      // Process commission for referral orders
+      if (order?.source === 'REFERRAL' && order.referredBy && !order.isCommissionProcessed) {
+        // Calculate 10% of original price
+        const commission = Math.floor(order.originalPrice * COMMISSION_RATE);
+        
+        // Update order with commission
+        order.partnerCommission = commission;
+        order.finalPrice = order.originalPrice - commission;
+        order.isCommissionProcessed = true;
+        await order.save();
+
+        // Transfer to partner
+        await stripe.transfers.create({
+          amount: commission * 100,
+          currency: "eur",
+          destination: order.referredBy.stripeAccountId,
+          description: `Commission for order ${order._id}`
+        });
+
+        // Update partner stats
+        await Partner.findByIdAndUpdate(order.referredBy._id, {
+          $inc: {
+            commissionEarned: commission,
+            totalReferralSales: order.originalPrice
+          },
+          $addToSet: {
+            ordersReferred: order._id
+          }
+        });
+      }
+
+      // Send confirmation email
+      if (order.customerDetails?.email) {
+        await emailService.sendPaymentConfirmation(order);
+      }
+
+    } catch (err) {
+      console.error('Webhook processing error:', err);
+    }
+  }
+
+  res.json({ received: true });
+};
 // Add this to your orderController.js
 exports.cancelPayment = async (req, res) => {
   try {
     const { orderId } = req.params;
     const { reason = "user_cancelled" } = req.body;
+    console.log("Order Id", orderId)
 
     if (!orderId) {
       return res.status(400).json({
@@ -377,13 +438,6 @@ async function handleFailedSession(session) {
   });
 }
 
-
-async function handleFailedSession(session) {
-  await Order.findByIdAndUpdate(session.client_reference_id, {
-    status: "failed",
-    paymentFailedAt: new Date(),
-  });
-}
 
 // In your paymentController.js
 exports.verifyPayment = async (req, res) => {

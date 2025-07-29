@@ -1,6 +1,9 @@
 // services/emailService.js
 const nodemailer = require('nodemailer');
 
+
+
+
 class EmailService {
   constructor() {
     if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
@@ -78,6 +81,8 @@ class EmailService {
       throw error;
     }
   }
+ 
+  
 
   getOrderConfirmationHtml(order) {
     return `
@@ -96,7 +101,7 @@ class EmailService {
           </tr>
           <tr>
             <td style="padding: 8px; border: 1px solid #ddd;"><strong>Amount</strong></td>
-            <td style="padding: 8px; border: 1px solid #ddd;">${this.formatCurrency(order.finalPrice || order.amount)}</td>
+            <td style="padding: 8px; border: 1px solid #ddd;">${this.formatCurrency(order.originalPrice  || order.amount)}</td>
           </tr>
           <tr>
             <td style="padding: 8px; border: 1px solid #ddd;"><strong>Date</strong></td>
@@ -119,19 +124,15 @@ class EmailService {
       
       Order ID: ${order._id}
       Plan: ${order.plan}
-      Amount: ${this.formatCurrency(order.finalPrice || order.amount)}
+      Amount: ${this.formatCurrency(order.originalPrice || order.amount)}
       Date: ${new Date(order.createdAt).toLocaleString()}
       
       Thank you for your order!
     `;
   }
-
-  formatCurrency(amount) {
-    return new Intl.NumberFormat('en-US', { 
-      style: 'currency', 
-      currency: 'EUR' 
-    }).format(amount / 100);
-  }
+    formatCurrency = (amount) => {
+    return `€${amount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
+  };
 }
 
 module.exports = new EmailService();

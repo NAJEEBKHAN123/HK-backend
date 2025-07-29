@@ -1,15 +1,14 @@
-
 const Client = require('../model/Client');
 const Partner = require('../model/Partner');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const Order = require('../model/Order')
+const Order = require('../model/Order');
 
 const PRICING = {
   STARTER: 3900,
   TURNKEY: 4600,
   PREMIUM: 9800
 };
-const COMMISSION_RATE = 0.10;
+const COMMISSION_RATE = 0.10; // 10%
 
 // Helper function for error responses
 const handleErrorResponse = (res, error, action) => {
@@ -23,62 +22,56 @@ const handleErrorResponse = (res, error, action) => {
 
 exports.createOrder = async (req, res) => {
   try {
-    console.log("creaeting order ", req.body)
     const { plan, customerDetails, referralCode, clientId } = req.body;
 
-    // Validate required fields
+    // Validate input
     if (!plan || !customerDetails || !customerDetails.email) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        message: 'Missing required fields'
+        message: 'Missing required fields' 
       });
     }
 
-    // Validate plan exists
     if (!PRICING[plan]) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        message: 'Invalid plan selected'
+        message: 'Invalid plan selected' 
       });
     }
 
-    // Initialize order data with DIRECT defaults
+    // Initialize order with full price
     const orderData = {
       plan,
       customerDetails,
       originalPrice: PRICING[plan],
       finalPrice: PRICING[plan],
-      partnerCommission: 0,
       status: 'pending',
       source: 'DIRECT',
-      referredBy: null,
-      referralCode: null,
       client: clientId || null
     };
 
-    // Process referral if valid code provided
+    let partner = null;
+
+    // Process referral if code exists
     if (referralCode) {
-      const partner = await Partner.findOne({
+      partner = await Partner.findOne({ 
         referralCode,
         status: 'active'
       });
 
       if (partner) {
-        // Calculate commission and adjust pricing
-        const commission = Math.floor(PRICING[plan] * COMMISSION_RATE);
-        
         orderData.source = 'REFERRAL';
         orderData.referredBy = partner._id;
-        orderData.referralCode = partner.referralCode;
-        orderData.partnerCommission = commission;
-        orderData.finalPrice = PRICING[plan]; 
+        orderData.referralCode = referralCode;
+        orderData.partnerCommission = Math.floor(PRICING[plan] * COMMISSION_RATE);
+        orderData.finalPrice = PRICING[plan] - orderData.partnerCommission;
       }
     }
 
-    // Create and save the order
+    // Create the order
     const order = await Order.create(orderData);
 
-    // Create Stripe session with correct final price
+    // Create Stripe checkout with FULL original price
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
@@ -88,48 +81,45 @@ exports.createOrder = async (req, res) => {
             name: `${plan} Plan`,
             description: 'Company formation package'
           },
-          unit_amount: orderData.finalPrice,
+          unit_amount: order.originalPrice * 100,
         },
         quantity: 1,
       }],
       mode: 'payment',
       success_url: `${process.env.FRONTEND_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}&order_id=${order._id}`,
-      cancel_url: `${process.env.FRONTEND_URL}/payment-cancelled`,
+      cancel_url: `${process.env.FRONTEND_URL}/payment-cancelled?order_id=${order._id}`,
       customer_email: order.customerDetails.email,
       metadata: {
         orderId: order._id.toString(),
-        source: order.source,
-        referralCode: order.referralCode || '',
-        partnerId: order.referredBy?.toString() || '',
-        commission: order.partnerCommission.toString()
+        clientId: order.client?.toString() || '',
+        referralCode: order.referralCode || ''
       }
     });
 
-    // Update order with session ID
     order.stripeSessionId = session.id;
     await order.save();
+
+    // 🔥 Increment partner.totalOrdersReferred if referral + client exists
+    if (partner && clientId) {
+      await Partner.findByIdAndUpdate(
+        partner._id,
+        { $inc: { totalOrdersReferred: 1 } }
+      );
+    }
 
     res.json({
       success: true,
       url: session.url,
       orderId: order._id,
-      orderDetails: {
-        plan: order.plan,
-        originalPrice: order.originalPrice,
-        finalPrice: order.finalPrice,
-        commission: order.partnerCommission,
-        source: order.source
-      }
+      amount: order.originalPrice,
+      currency: 'eur'
     });
 
   } catch (error) {
     handleErrorResponse(res, error, 'create order');
-    console.log("error in creating order", error)
-    res.status(500).json({
-      messsage: "Error in creating order"
-    })
   }
 };
+
 
 exports.handleStripeWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
@@ -142,13 +132,13 @@ exports.handleStripeWebhook = async (req, res) => {
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
-    console.error('Webhook signature verification failed:', err);
+    console.error('Webhook verification failed:', err);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-    
+
     try {
       const order = await Order.findOneAndUpdate(
         { stripeSessionId: session.id },
@@ -162,62 +152,113 @@ exports.handleStripeWebhook = async (req, res) => {
       ).populate('referredBy');
 
       // Process commission for referral orders
-      if (order?.source === 'REFERRAL' && order.referredBy) {
-        // Transfer commission to partner's Stripe account
-        await stripe.transfers.create({
-          amount: order.partnerCommission * 100,
-          currency: 'eur',
-          destination: order.referredBy.stripeAccountId,
-          description: `Commission for order ${order._id}`
-        });
+      if (order?.source === 'REFERRAL' && 
+          order.referredBy && 
+          !order.isCommissionProcessed) {
+        
+        // Ensure commission is calculated
+        if (order.partnerCommission === 0) {
+          order.partnerCommission = Math.floor(order.originalPrice * COMMISSION_RATE);
+          order.finalPrice = order.originalPrice - order.partnerCommission;
+        }
 
-        // Update partner stats
-        await Partner.findByIdAndUpdate(order.referredBy._id, {
-          $inc: { 
-            commissionEarned: order.partnerCommission,
-            totalReferralSales: order.finalPrice
-          },
-          $addToSet: { 
-            ordersReferred: order._id 
+        try {
+          // Transfer to partner if they have Stripe account
+          if (order.referredBy.stripeAccountId) {
+            await stripe.transfers.create({
+              amount: order.partnerCommission * 100,
+              currency: 'eur',
+              destination: order.referredBy.stripeAccountId,
+              description: `Commission for order ${order._id}`
+            });
+
+            // Update partner with paid commission
+            await Partner.findByIdAndUpdate(order.referredBy._id, {
+              $inc: {
+                commissionEarned: order.partnerCommission,
+                commissionPaid: order.partnerCommission,
+                totalReferralSales: order.originalPrice
+              },
+              $addToSet: {
+                ordersReferred: order._id
+              }
+            });
+          } else {
+            // Just track earned commission if no Stripe account
+            await Partner.findByIdAndUpdate(order.referredBy._id, {
+              $inc: {
+                commissionEarned: order.partnerCommission,
+                totalReferralSales: order.originalPrice
+              },
+              $addToSet: {
+                ordersReferred: order._id
+              }
+            });
           }
-        });
+
+          order.isCommissionProcessed = true;
+          await order.save();
+        } catch (transferErr) {
+          console.error('Commission processing failed:', transferErr);
+          // Mark as processed to avoid duplicate attempts
+          order.isCommissionProcessed = true;
+          await order.save();
+        }
       }
     } catch (err) {
-      console.error('Error processing completed session:', err);
+      console.error('Webhook processing error:', err);
     }
   }
 
   res.json({ received: true });
 };
 
-// Handle successful payment webhook
-
-
 
 // Get all orders (admin)
 exports.getAllOrders = async (req, res) => {
   try {
-    const orders = await Order.find()
+    const { page = 1, limit = 10, search = '' } = req.query;
+    const skip = (page - 1) * limit;
+
+    const query = {};
+    if (search) {
+      query.$or = [
+        { 'customerDetails.fullName': { $regex: search, $options: 'i' } },
+        { 'customerDetails.email': { $regex: search, $options: 'i' } },
+        { plan: { $regex: search, $options: 'i' } },
+        { status: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const orders = await Order.find(query)
       .populate('client', 'name email')
       .populate('referredBy', 'name email referralCode')
-      .sort({ createdAt: -1 });
-      
-    res.json({ 
-      success: true, 
-      count: orders.length, 
-      data: orders 
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Order.countDocuments(query);
+
+    res.json({
+      success: true,
+      count: orders.length,
+      total,
+      page: Number(page),
+      pages: Math.ceil(total / limit),
+      data: orders
     });
   } catch (error) {
-    handleErrorResponse(res, error, 'fetch orders');
+    console.error('Error fetching orders:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch orders'
+    });
   }
 };
 
 // Get single order
-// Get single order details
-// Add this to your orderController.js
 exports.getOrder = async (req, res) => {
   try {
-    // Skip authentication for this endpoint since it's needed for payment verification
     const order = await Order.findById(req.params.id)
       .select('-__v -updatedAt')
       .populate('client', 'fullName email phone')
@@ -230,27 +271,13 @@ exports.getOrder = async (req, res) => {
       });
     }
 
-    // Basic security check - ensure the order is either completed or belongs to the requesting user
-    // (You might want to add more specific checks based on your requirements)
-    if (order.status !== 'completed') {
-      return res.status(403).json({
-        success: false,
-        message: 'Order not yet completed'
-      });
-    }
-
     res.json({
       success: true,
       data: order
     });
 
   } catch (error) {
-    console.error('Error fetching order:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch order details',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    handleErrorResponse(res, error, 'fetch order');
   }
 };
 
@@ -276,8 +303,12 @@ exports.cancelOrder = async (req, res) => {
 
     // If order was completed and had commission, reverse it
     if (order.status === 'completed' && order.referredBy && order.partnerCommission > 0) {
-      await Partner.findByIdAndUpdate(order.referredBy, {
-        $inc: { commissionEarned: -order.partnerCommission }
+      await Partner.findByIdAndUpdate(order.referredBy._id, {
+        $inc: { 
+          commissionEarned: -order.partnerCommission,
+          totalReferralSales: -order.originalPrice
+        },
+        $pull: { ordersReferred: order._id }
       });
     }
 
@@ -305,7 +336,6 @@ exports.getPublicOrder = async (req, res) => {
       });
     }
 
-    // Only return completed orders to public endpoint
     if (order.status !== 'completed') {
       return res.status(403).json({
         success: false,
@@ -318,7 +348,7 @@ exports.getPublicOrder = async (req, res) => {
       data: {
         _id: order._id,
         plan: order.plan,
-        price: order.finalPrice || order.amount,
+        price: order.originalPrice,
         status: order.status,
         createdAt: order.createdAt,
         customerDetails: order.customerDetails,
@@ -327,10 +357,100 @@ exports.getPublicOrder = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error fetching public order:', error);
+    handleErrorResponse(res, error, 'fetch public order');
+  }
+};
+
+exports.updateOrder = async (req, res) => {
+  try {
+    const { status, paymentMethod, transactionReference, adminNotes } = req.body;
+    const orderId = req.params.id;
+
+    // Convert status to lowercase and validate
+    const normalizedStatus = status.toLowerCase();
+   if (!['pending', 'processing', 'completed', 'failed', 'cancelled'].includes(normalizedStatus)) {
+  return res.status(400).json({
+    success: false,
+    message: 'Invalid status value'
+  });
+}
+
+
+    // Validate input
+    if (normalizedStatus === 'completed' && (!paymentMethod || !transactionReference)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment method and transaction reference are required for completed orders'
+      });
+    }
+
+    const updateData = {
+      status: normalizedStatus,
+      adminNotes,
+      ...(normalizedStatus === 'completed' && {
+        paymentMethod,
+        transactionReference,
+        paymentConfirmedAt: new Date()
+      }),
+      ...(normalizedStatus === 'cancelled' && {
+        cancellationReason: req.body.cancellationReason || 'admin_cancelled',
+        cancelledAt: new Date()
+      })
+    };
+
+    const order = await Order.findByIdAndUpdate(
+      orderId,
+      updateData,
+      { new: true }
+    ).populate('referredBy');
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+
+    // Handle commission updates
+    if (order.status === 'completed' && order.referredBy && order.partnerCommission > 0 && !order.isCommissionProcessed) {
+      await Partner.findByIdAndUpdate(order.referredBy._id, {
+        $inc: { 
+          commissionEarned: order.partnerCommission,
+          availableCommission: order.partnerCommission,
+          totalReferralSales: order.originalPrice
+        },
+        $addToSet: { ordersReferred: order._id }
+      });
+      order.isCommissionProcessed = true;
+      await order.save();
+    }
+
+    // Handle commission reversal for cancelled orders
+    if (order.status === 'cancelled' && order.referredBy && order.partnerCommission > 0 && order.isCommissionProcessed) {
+      await Partner.findByIdAndUpdate(order.referredBy._id, {
+        $inc: { 
+          commissionEarned: -order.partnerCommission,
+          availableCommission: -order.partnerCommission,
+          totalReferralSales: -order.originalPrice
+        },
+        $pull: { ordersReferred: order._id }
+      });
+      order.isCommissionProcessed = false;
+      await order.save();
+    }
+
+    res.json({
+      success: true,
+      data: order,
+      message: 'Order updated successfully'
+    });
+
+  } catch (error) {
+    console.error('Update order error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch order details'
+      message: 'Failed to update order',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };

@@ -64,3 +64,4 @@ exports.approvePartner = async (req, res) => {
     });
   }
 };
+

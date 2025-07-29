@@ -53,7 +53,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use('/api/partner-auth', partnerAuthRoutes);
 app.use('/api/partner-admin', partnerAdminRoutes);
-app.use('/api/auth/client', clientRoutes);
+app.use('/api/client', clientRoutes);
 
 
 // Health Check

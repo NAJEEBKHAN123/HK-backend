@@ -25,7 +25,6 @@ const inviteSchema = new mongoose.Schema({
     default: false
   },
   usedAt: Date,
-  // Track the partner created from this invite
   partnerCreated: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Partner'

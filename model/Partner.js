@@ -46,7 +46,14 @@ const partnerSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
-  stripeAccountId: String,
+  availableCommission: {
+    type: Number,
+    default: 0
+  },
+  stripeAccountId: {
+    type: String,
+    select: false
+  },
   clientsReferred: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Client'
@@ -58,31 +65,110 @@ const partnerSchema = new mongoose.Schema({
   referralClicks: {
     type: Number,
     default: 0
+  },
+  totalReferralSales: {
+    type: Number,
+    default: 0
+  },
+  referredBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Partner'
   }
-}, { 
+  
+},{ 
   timestamps: true,
-  toJSON: { virtuals: true },
-  toObject: { virtuals: true }
+  toJSON: { 
+    virtuals: true,
+    getters: true,
+    transform: function(doc, ret) {
+      delete ret.password;
+      delete ret.stripeAccountId;
+      delete ret.__v;
+      return ret;
+    }
+  },
+  toObject: { 
+    virtuals: true,
+    getters: true 
+  }
 });
 
-// Virtuals
+// Virtual Properties
 partnerSchema.virtual('referralLink').get(function() {
   return `${process.env.FRONTEND_URL}/signup?ref=${this.referralCode}`;
 });
 
-partnerSchema.virtual('availableCommission').get(function() {
-  return this.commissionEarned - this.commissionPaid;
+partnerSchema.virtual('totalClientsReferred').get(function() {
+  if (Array.isArray(this.clientsReferred)) {
+    return this.clientsReferred.length;
+  }
+  return 0;
+});
+
+partnerSchema.virtual('totalOrdersReferred').get(function() {
+  return this.ordersReferred?.length || 0;
+});
+
+
+partnerSchema.virtual('conversionRate').get(function() {
+  if (!this.referralClicks || this.referralClicks === 0) return 0;
+  const clientsReferred = this.totalClientsReferred;
+  const rate = (clientsReferred / this.referralClicks) * 100;
+  return parseFloat(rate.toFixed(2));
 });
 
 // Middleware
 partnerSchema.pre('save', async function(next) {
   if (!this.isModified('password')) return next();
-  this.password = await bcrypt.hash(this.password, 12);
-  next();
+  
+  try {
+    const salt = await bcrypt.genSalt(12);
+    this.password = await bcrypt.hash(this.password, salt);
+    next();
+  } catch (err) {
+    next(err);
+  }
 });
 
+
+// Method to compare passwords
 partnerSchema.methods.comparePassword = async function(candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
-module.exports = mongoose.model('Partner', partnerSchema);
+// Method to update referral stats
+partnerSchema.methods.updateReferralStats = async function(order) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    this.ordersReferred.push(order._id);
+    this.commissionEarned += order.partnerCommission;
+    this.availableCommission += order.partnerCommission;
+    this.totalReferralSales += order.finalPrice;
+    
+    await this.save({ session });
+    await session.commitTransaction();
+    
+    return this;
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
+
+// Static method to find by referral code
+partnerSchema.statics.findByReferralCode = function(code) {
+  return this.findOne({ referralCode: code, status: 'active' });
+};
+
+// Indexes for better performance
+partnerSchema.index({ email: 1 }, { unique: true });
+partnerSchema.index({ referralCode: 1 }, { unique: true });
+partnerSchema.index({ status: 1 });
+partnerSchema.index({ referredBy: 1 });
+
+const Partner = mongoose.model('Partner', partnerSchema);
+module.exports = Partner; 
