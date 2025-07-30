@@ -23,8 +23,23 @@ const allowedOrigins = [
 ];
 
 app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("CORS not allowed from this origin: " + origin));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+
+app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials: true,
+
   origin: function (origin, callback) {
     // Allow requests with no origin (e.g., Postman) or matching origins
     if (!origin || allowedOrigins.includes(origin)) {
