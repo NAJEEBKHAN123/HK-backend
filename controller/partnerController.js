@@ -533,7 +533,8 @@ exports.getAdminPartnerDetails = async (req, res) => {
 
     res.json({
       success: true,
-      partner: {
+      data: {
+         partner: {
         id: partner._id,
         name: partner.name,
         email: partner.email,
@@ -553,6 +554,7 @@ exports.getAdminPartnerDetails = async (req, res) => {
       },
       clients: partner.clientsReferred || [],
       orders: partner.ordersReferred || []
+      }
     });
 
   } catch (error) {
