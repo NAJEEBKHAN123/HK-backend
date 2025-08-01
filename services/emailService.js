@@ -13,18 +13,23 @@ class EmailService {
     }
 
     this.transporter = nodemailer.createTransport({
-      service: process.env.EMAIL_SERVICE || 'gmail',
-      host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-      port: parseInt(process.env.EMAIL_PORT) || 587,
+      host: process.env.EMAIL_HOST,
+      port: parseInt(process.env.EMAIL_PORT),
       secure: process.env.EMAIL_SECURE === 'true',
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASSWORD
       },
-      pool: true,
       tls: {
-        rejectUnauthorized: process.env.NODE_ENV !== 'production'
+        rejectUnauthorized: false
       }
+    });
+
+    console.log('Current SMTP config:', {
+      host: process.env.EMAIL_HOST,
+      port: process.env.EMAIL_PORT,
+      user: process.env.EMAIL_USER,
+      usingCustom: true
     });
 
     this.verifyConnection().catch(err => {
@@ -38,27 +43,6 @@ class EmailService {
     console.log('✅ SMTP connection verified');
   }
 
-  async sendPaymentConfirmation(order) {
-    try {
-      if (!order.customerDetails?.email) {
-        throw new Error('No recipient email provided');
-      }
-
-      const mailOptions = {
-        from: `"${process.env.EMAIL_FROM_NAME || 'Your Company'}" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
-        to: order.customerDetails.email,
-        subject: 'Order Confirmation',
-        html: this.getOrderConfirmationHtml(order),
-        text: this.getOrderConfirmationText(order)
-      };
-
-      return await this.sendEmail(mailOptions);
-    } catch (error) {
-      console.error('Payment confirmation email failed:', error);
-      throw error;
-    }
-  }
-
   async sendEmail(mailOptions) {
     if (!this.transporter) {
       console.log('[Email Mock]', {
@@ -70,7 +54,10 @@ class EmailService {
     }
 
     try {
-      const info = await this.transporter.sendMail(mailOptions);
+      const info = await this.transporter.sendMail({
+        ...mailOptions,
+        from: mailOptions.from || `"${process.env.EMAIL_FROM_NAME}" <${process.env.EMAIL_FROM}>`
+      });
       console.log('✅ Email sent:', info.messageId);
       return info;
     } catch (error) {
@@ -81,7 +68,35 @@ class EmailService {
       throw error;
     }
   }
- 
+
+  // Add the contact email functions here
+  async sendContactEmail({ name, email, phone, message }) {
+    return this.sendEmail({
+      to: process.env.CONTACT_RECIPIENT,
+      subject: `New contact from ${name}`,
+      html: `
+        <h2>New Contact Message</h2>
+        <p><strong>Name:</strong> ${name}</p>
+        <p><strong>Email:</strong> ${email}</p>
+        <p><strong>Phone:</strong> ${phone || 'N/A'}</p>
+        <p><strong>Message:</strong> ${message}</p>
+      `
+    });
+  }
+
+  async sendConfirmationEmail({ name, email }) {
+    return this.sendEmail({
+      to: email,
+      subject: 'We received your message',
+      html: `
+        <h3>Hi ${name},</h3>
+        <p>Thanks for reaching out. We have received your message and will get back to you shortly.</p>
+        <br/>
+        <p>Regards,<br/>OuvrirSociete Team</p>
+      `
+    });
+  }
+
   
 
   getOrderConfirmationHtml(order) {

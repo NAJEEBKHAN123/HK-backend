@@ -1,33 +1,21 @@
 const Booking = require('../model/webhookModel');
-const nodemailer = require('nodemailer');
-
-// (Optional) Email Confirmation Setup
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
+const emailService = require('../utils/mailer'); // Import your email service
 
 const sendConfirmationEmail = async (email, name) => {
   const mailOptions = {
-    from: process.env.EMAIL_USER,
+    from: `"${process.env.EMAIL_FROM_NAME}" <${process.env.EMAIL_FROM}>`,
     to: email,
     subject: 'Booking Confirmed',
     html: `<p>Hello ${name},<br/>Your booking has been received. We'll be in touch soon!</p>`
   };
 
-  await transporter.sendMail(mailOptions);
+  await emailService.sendEmail(mailOptions);
 };
 
 exports.handleWebhook = async (req, res) => {
   try {
     const { payload } = req.body;
     console.log("📦 Webhook payload:", JSON.stringify(payload, null, 2));
-
-    const extracted = extractQuestions(payload.questions_and_answers);
-    console.log("🧾 Extracted questions:", extracted);
 
     const bookingData = {
       eventId: payload.event.uuid,
@@ -43,16 +31,25 @@ exports.handleWebhook = async (req, res) => {
       })) || [],
       meetingMethod: getMeetingMethod(payload.event.location),
       locationDetails: payload.event.location?.location || payload.event.location?.join_url || 'N/A',
-      ...extracted,
+      ...extractQuestions(payload.questions_and_answers),
       status: 'scheduled'
     };
 
-    console.log("📄 Final booking data:", bookingData);
-
     await Booking.create(bookingData);
 
-    // (Optional) Send confirmation email
-    // await sendConfirmationEmail(payload.invitee.email, payload.invitee.name);
+    // Send confirmation to user
+    await sendConfirmationEmail({
+      name: payload.invitee.name,
+      email: payload.invitee.email
+    });
+
+    // Send notification to admin
+    await sendContactEmail({
+      name: payload.invitee.name,
+      email: payload.invitee.email,
+      phone: payload.invitee.text_reminder_number,
+      message: 'New booking appointment'
+    });
 
     res.status(200).json({ success: true });
   } catch (error) {
@@ -111,5 +108,3 @@ function extractQuestions(qnaArray) {
   console.log('🧾 Extracted questions:', questions);
   return questions;
 }
-
-

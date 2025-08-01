@@ -1,16 +1,22 @@
 const nodemailer = require('nodemailer');
 
+// Use environment variables for ALL configuration
 const transporter = nodemailer.createTransport({
-  service: 'gmail', // Changed from SendGrid
+  host: process.env.EMAIL_HOST, // mail.ouvrir-societe-hong-kong.fr
+  port: parseInt(process.env.EMAIL_PORT), // 587
+  secure: process.env.EMAIL_SECURE === 'true', // false for 587
   auth: {
-    user: process.env.EMAIL_USER, // Use Gmail email
-    pass: process.env.EMAIL_PASSWORD // Use Gmail app password
+    user: process.env.EMAIL_USER, // bonjour@ouvrir-societe-hong-kong.fr
+    pass: process.env.EMAIL_PASSWORD // Ludovic2609!
+  },
+  tls: {
+    rejectUnauthorized: false // For development only
   }
 });
 
 exports.sendEmail = async ({ to, subject, html }) => {
   await transporter.sendMail({
-    from: '"Partner Program" <partners@yourdomain.com>',
+    from: `"${process.env.EMAIL_FROM_NAME}" <${process.env.EMAIL_FROM}>`,
     to,
     subject,
     html
@@ -32,6 +38,7 @@ exports.sendAdminNotification = async (type, data) => {
   }
 
   await transporter.sendMail({
+    from: `"${process.env.EMAIL_FROM_NAME}" <${process.env.EMAIL_FROM}>`,
     to: process.env.ADMIN_EMAIL,
     subject,
     html
