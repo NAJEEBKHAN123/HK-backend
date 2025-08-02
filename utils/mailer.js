@@ -12,8 +12,8 @@ const transporter = nodemailer.createTransport({
   tls: { 
     rejectUnauthorized: false 
   },
-  logger: true,
-  debug: true
+  logger: false,
+  debug: false
 });
 
 // Verify connection on startup
@@ -30,8 +30,7 @@ const sendEmail = async (mailOptions) => {
     const info = await transporter.sendMail({
       ...mailOptions,
       from: mailOptions.from || `"${process.env.EMAIL_FROM_NAME}" <${process.env.EMAIL_FROM}>`
-    });
-    console.log('📧 Email sent:', info.messageId);
+    })
     return info;
   } catch (error) {
     console.error('❌ Email failed:', error);

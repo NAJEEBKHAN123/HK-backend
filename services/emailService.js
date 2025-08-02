@@ -25,12 +25,12 @@ class EmailService {
       }
     });
 
-    console.log('Current SMTP config:', {
-      host: process.env.EMAIL_HOST,
-      port: process.env.EMAIL_PORT,
-      user: process.env.EMAIL_USER,
-      usingCustom: true
-    });
+    // console.log('Current SMTP config:', {
+    //   host: process.env.EMAIL_HOST,
+    //   port: process.env.EMAIL_PORT,
+    //   user: process.env.EMAIL_USER,
+    //   usingCustom: true
+    // });
 
     this.verifyConnection().catch(err => {
       console.error('❌ SMTP verification failed:', err.message);

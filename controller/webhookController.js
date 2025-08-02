@@ -105,6 +105,6 @@ function extractQuestions(qnaArray) {
     }
   });
 
-  console.log('🧾 Extracted questions:', questions);
+  // console.log('🧾 Extracted questions:', questions);
   return questions;
 }
