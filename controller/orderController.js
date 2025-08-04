@@ -70,6 +70,7 @@ exports.createOrder = async (req, res) => {
 
     // Create the order
     const order = await Order.create(orderData);
+    console.log('Before sending emails - order:', order._id);
 
     // Send order confirmation emails
     try {
