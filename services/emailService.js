@@ -89,7 +89,7 @@ class EmailService {
           <p style="margin-top: 20px; text-align: center;">
             <a href="${process.env.ADMIN_DASHBOARD_URL}/orders/${order._id}" 
                style="background: #d32f2f; color: white; padding: 8px 16px; text-decoration: none; border-radius: 4px;">
-              View Order in Dashboard
+              
             </a>
           </p>
         </div>
