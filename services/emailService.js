@@ -1,41 +1,77 @@
 const nodemailer = require('nodemailer');
 
 class EmailService {
- constructor() {
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
-    console.warn('⚠️ Email service not configured');
-    this.transporter = null;
-    return;
+  constructor() {
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
+      console.warn('⚠️ Email service not configured');
+      this.transporter = null;
+      return;
+    }
+
+    // Enhanced transporter configuration
+    this.transporter = nodemailer.createTransport({
+      host: process.env.EMAIL_HOST,
+      port: parseInt(process.env.EMAIL_PORT),
+      secure: process.env.EMAIL_SECURE === 'true', // Convert string to boolean
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASSWORD
+      },
+      tls: {
+        rejectUnauthorized: true // Should be true for production
+      },
+      dkim: process.env.DKIM_PRIVATE_KEY ? {
+        domainName: process.env.DOMAIN_NAME,
+        keySelector: process.env.DKIM_SELECTOR || 'default',
+        privateKey: process.env.DKIM_PRIVATE_KEY
+      } : undefined,
+      priority: 'high',
+      logger: true,
+      debug: false, // Disable in production
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000
+    });
+
+    // Verify DNS records
+    this.verifyDnsRecords().catch(err => {
+      console.error('DNS Verification Error:', err);
+    });
+
+    // Test connection
+    this.verifyConnection().catch(err => {
+      console.error('SMTP Connection Error:', {
+        message: err.message,
+        code: err.code,
+        response: err.response
+      });
+    });
   }
 
-  // Use these specific options for your Hosterion mail server
-  this.transporter = nodemailer.createTransport({
-    host: process.env.EMAIL_HOST,
-    port: parseInt(process.env.EMAIL_PORT),
-    secure: false, // Explicitly set to false
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASSWORD
-    },
-    tls: {
-      rejectUnauthorized: false // Needed for some servers
-    },
-    logger: true,
-    debug: true,
-    connectionTimeout: 10000, // 10 seconds
-    greetingTimeout: 10000,   // 10 seconds
-    socketTimeout: 10000      // 10 seconds
-  });
+  async verifyDnsRecords() {
+    const domain = process.env.EMAIL_FROM.split('@')[1];
+    
+    // Check MX records
+    const mxRecords = await resolveMx(domain);
+    if (!mxRecords || mxRecords.length === 0) {
+      console.warn('⚠️ No MX records found for domain:', domain);
+    } else {
+      console.log('✅ MX records verified:', mxRecords);
+    }
 
-  // Test connection immediately
-  this.verifyConnection().catch(err => {
-    console.error('SMTP Connection Error:', {
-      message: err.message,
-      code: err.code,
-      response: err.response
-    });
-  });
-}
+    // Check SPF (should be done manually in DNS settings)
+    console.log('ℹ️ Please ensure your domain has proper SPF record:');
+    console.log(`v=spf1 include:${process.env.EMAIL_HOST} ~all`);
+
+    // Check DKIM (should be done manually if not configured here)
+    if (!process.env.DKIM_PRIVATE_KEY) {
+      console.warn('⚠️ DKIM not configured - consider adding it for better deliverability');
+    }
+
+    // Check DMARC (should be done manually in DNS settings)
+    console.log('ℹ️ Consider adding DMARC record for your domain:');
+    console.log('_dmarc IN TXT "v=DMARC1; p=none; rua=mailto:postmaster@yourdomain.com"');
+  }
 
   async verifyConnection() {
     if (!this.transporter) throw new Error('Email transporter not configured');
@@ -54,6 +90,26 @@ class EmailService {
       return { accepted: [mailOptions.to], messageId: 'mocked' };
     }
 
+    // Add List-Unsubscribe header if not present
+    if (!mailOptions.headers) {
+      mailOptions.headers = {};
+    }
+    
+    if (!mailOptions.headers['List-Unsubscribe'] && process.env.UNSUBSCRIBE_URL) {
+      mailOptions.headers['List-Unsubscribe'] = `<${process.env.UNSUBSCRIBE_URL}>`;
+    }
+
+    // Add standard headers for better deliverability
+    mailOptions.headers = {
+      ...mailOptions.headers,
+      'X-Mailer': 'NodeMailer',
+      'X-Priority': '1',
+      'X-MSMail-Priority': 'High',
+      'Precedence': 'bulk',
+      'MIME-Version': '1.0',
+      'Content-Type': 'text/html; charset=utf-8'
+    };
+
     try {
       console.log('Attempting to send email:', {
         from: mailOptions.from || `"${process.env.EMAIL_FROM_NAME}" <${process.env.EMAIL_FROM}>`,
@@ -61,14 +117,20 @@ class EmailService {
         subject: mailOptions.subject
       });
 
+      // Add plain text version if not provided
+      if (mailOptions.html && !mailOptions.text) {
+        mailOptions.text = this.htmlToText(mailOptions.html);
+      }
+
       const info = await this.transporter.sendMail({
         ...mailOptions,
-        from: mailOptions.from || `"${process.env.EMAIL_FROM_NAME}" <${process.env.EMAIL_FROM}>`
+        from: mailOptions.from || `"${process.env.EMAIL_FROM_NAME}" <${process.env.EMAIL_FROM}>`,
+        date: new Date().toUTCString(),
+        messageId: this.generateMessageId()
       });
 
       console.log('✅ Email sent successfully:', {
         messageId: info.messageId,
-        response: info.response,
         accepted: info.accepted,
         rejected: info.rejected
       });
@@ -87,6 +149,21 @@ class EmailService {
       });
       throw error;
     }
+  }
+
+  generateMessageId() {
+    const domain = process.env.EMAIL_FROM.split('@')[1];
+    return `<${Date.now()}${Math.random().toString(16).substr(2)}@${domain}>`;
+  }
+
+  htmlToText(html) {
+    // Simple HTML to text conversion
+    return html
+      .replace(/<style[^>]*>.*?<\/style>/gs, '')
+      .replace(/<script[^>]*>.*?<\/script>/gs, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
 
   async sendOrderConfirmation(order) {
