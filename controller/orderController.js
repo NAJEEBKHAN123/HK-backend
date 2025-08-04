@@ -71,6 +71,14 @@ exports.createOrder = async (req, res) => {
     // Create the order
     const order = await Order.create(orderData);
 
+    // Send order confirmation emails
+    try {
+      await EmailService.sendOrderConfirmation(order);
+    } catch (emailError) {
+      console.error('Failed to send order confirmation emails:', emailError);
+      // Don't fail the whole request if email fails
+    }
+
     // Create Stripe checkout with FULL original price
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -99,7 +107,7 @@ exports.createOrder = async (req, res) => {
     order.stripeSessionId = session.id;
     await order.save();
 
-    // 🔥 Increment partner.totalOrdersReferred if referral + client exists
+    // Increment partner.totalOrdersReferred if referral + client exists
     if (partner && clientId) {
       await Partner.findByIdAndUpdate(
         partner._id,
@@ -150,6 +158,15 @@ exports.handleStripeWebhook = async (req, res) => {
         },
         { new: true }
       ).populate('referredBy');
+
+      // Send payment confirmation email
+      if (order) {
+        try {
+          await EmailService.sendPaymentSuccess(order);
+        } catch (emailError) {
+          console.error('Failed to send payment confirmation email:', emailError);
+        }
+      }
 
       // Process commission for referral orders
       if (order?.source === 'REFERRAL' && 
