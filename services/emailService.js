@@ -18,9 +18,7 @@ class EmailService {
       },
       tls: {
         rejectUnauthorized: false
-      },
-      logger: true,
-      debug: true
+      }
     });
 
     this.verifyConnection().catch(err => {
@@ -30,9 +28,8 @@ class EmailService {
 
   async verifyConnection() {
     if (!this.transporter) throw new Error('Email transporter not configured');
-    const success = await this.transporter.verify();
-    console.log('✅ SMTP connection verified', success);
-    return success;
+    await this.transporter.verify();
+    console.log('✅ SMTP connection verified');
   }
 
   async sendEmail(mailOptions) {
@@ -46,119 +43,74 @@ class EmailService {
     }
 
     try {
-      const fullOptions = {
+      const info = await this.transporter.sendMail({
         ...mailOptions,
         from: mailOptions.from || `"${process.env.EMAIL_FROM_NAME}" <${process.env.EMAIL_FROM}>`
-      };
-      
-      console.log('Attempting to send email to:', fullOptions.to);
-      const info = await this.transporter.sendMail(fullOptions);
-      
-      console.log('✅ Email successfully sent:', {
-        messageId: info.messageId,
-        to: info.accepted,
-        subject: info.envelope.subject
       });
+      console.log('✅ Email sent:', info.messageId);
       return info;
     } catch (error) {
       console.error('❌ Email failed to send:', {
         to: mailOptions.to,
-        error: error.message,
-        stack: error.stack,
-        response: error.response
+        error: error.message
       });
       throw error;
     }
   }
 
+  // Order-related email methods
   async sendOrderConfirmation(order) {
     const customerEmail = order.customerDetails.email;
-    const adminEmail = process.env.ADMIN_EMAIL || process.env.CONTACT_RECIPIENT;
     
-    if (!adminEmail) {
-      console.error('No admin email configured!');
-      return;
-    }
-
     // Send to customer
-    try {
-      console.log(`Sending confirmation to customer: ${customerEmail}`);
-      await this.sendEmail({
-        to: customerEmail,
-        subject: `Your Order Confirmation - #${order._id}`,
-        html: this.getOrderConfirmationHtml(order),
-        text: this.getOrderConfirmationText(order)
-      });
-    } catch (customerError) {
-      console.error('Failed to send customer confirmation:', customerError);
-    }
+    await this.sendEmail({
+      to: customerEmail,
+      subject: `Your Order Confirmation - #${order._id}`,
+      html: this.getOrderConfirmationHtml(order),
+      text: this.getOrderConfirmationText(order)
+    });
 
-    // Send to admin (with different from address to avoid blocking)
-    try {
-      console.log(`Sending notification to admin: ${adminEmail}`);
-      await this.sendEmail({
-        to: adminEmail,
-        from: `"Order Notifications" <${process.env.EMAIL_FROM}>`,
-        subject: `📦 New Order #${order._id}`,
-        html: this.getAdminNotificationHtml(order),
-        priority: 'high'
-      });
-    } catch (adminError) {
-      console.error('Failed to send admin notification:', adminError);
-    }
+    // Send to admin
+    await this.sendEmail({
+      to: process.env.ADMIN_EMAIL || process.env.CONTACT_RECIPIENT,
+      subject: `New Order Received - #${order._id}`,
+      html: `
+        <h2>New Order Notification</h2>
+        ${this.getOrderConfirmationHtml(order)}
+        <h3>Customer Details</h3>
+        <p><strong>Name:</strong> ${order.customerDetails.fullName}</p>
+        <p><strong>Email:</strong> ${customerEmail}</p>
+        <p><strong>Phone:</strong> ${order.customerDetails.phone || 'N/A'}</p>
+      `
+    });
   }
 
   async sendPaymentSuccess(order) {
-    try {
-      await this.sendEmail({
-        to: order.customerDetails.email,
-        subject: `Payment Received - Order #${order._id}`,
-        html: this.getPaymentSuccessHtml(order)
-      });
-    } catch (error) {
-      console.error('Failed to send payment confirmation:', error);
-    }
+    return this.sendEmail({
+      to: order.customerDetails.email,
+      subject: `Payment Received - Order #${order._id}`,
+      html: this.getPaymentSuccessHtml(order)
+    });
   }
 
-  getAdminNotificationHtml(order) {
+  // Template methods
+  getOrderConfirmationHtml(order) {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #d35400;">NEW ORDER RECEIVED</h2>
-        <h3>Order #${order._id}</h3>
+        <h2 style="color: #2c3e50;">Order Confirmation</h2>
+        <p>Thank you for your order. Here are your order details:</p>
         
-        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
-          <tr>
-            <td style="padding: 8px; border: 1px solid #ddd; width: 30%;"><strong>Plan</strong></td>
-            <td style="padding: 8px; border: 1px solid #ddd;">${order.plan}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px; border: 1px solid #ddd;"><strong>Amount</strong></td>
-            <td style="padding: 8px; border: 1px solid #ddd;">${this.formatCurrency(order.originalPrice)}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px; border: 1px solid #ddd;"><strong>Date</strong></td>
-            <td style="padding: 8px; border: 1px solid #ddd;">${new Date(order.createdAt).toLocaleString()}</td>
-          </tr>
-        </table>
-
-        <h3 style="margin-top: 25px;">Customer Details</h3>
-        <table style="width: 100%; border-collapse: collapse;">
-          <tr>
-            <td style="padding: 8px; border: 1px solid #ddd; width: 30%;"><strong>Name</strong></td>
-            <td style="padding: 8px; border: 1px solid #ddd;">${order.customerDetails.fullName}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px; border: 1px solid #ddd;"><strong>Email</strong></td>
-            <td style="padding: 8px; border: 1px solid #ddd;">${order.customerDetails.email}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px; border: 1px solid #ddd;"><strong>Phone</strong></td>
-            <td style="padding: 8px; border: 1px solid #ddd;">${order.customerDetails.phone || 'N/A'}</td>
-          </tr>
-        </table>
-
-        <div style="margin-top: 30px; padding: 15px; background-color: #f8f9fa; border-left: 4px solid #d35400;">
-          <p><strong>Action Required:</strong> Process this order within 24 hours</p>
+        ${this.getOrderDetailsTable(order)}
+        
+        <p style="margin-top: 20px;">
+          <strong>Next Steps:</strong> 
+          ${order.status === 'completed' 
+            ? 'Your payment has been received and we are processing your order.' 
+            : 'Please complete your payment to proceed with your order.'}
+        </p>
+        
+        <div style="margin-top: 30px; font-size: 12px; color: #777;">
+          <p>© ${new Date().getFullYear()} ${process.env.EMAIL_FROM_NAME}. All rights reserved.</p>
         </div>
       </div>
     `;
