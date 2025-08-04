@@ -19,6 +19,7 @@ const allowedOrigins = [
   "http://localhost:5173",
   "https://www.ouvrir-societe-hong-kong.fr",  
   "https://ouvrir-societe-hong-kong.fr",  
+  "https://hk-frontend-rust.vercel.app"
 ];
 
 app.use(
