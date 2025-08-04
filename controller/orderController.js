@@ -67,19 +67,34 @@ exports.createOrder = async (req, res) => {
 
     const order = await Order.create(orderData);
 
-    // Send order confirmation email
-   try {
-  await EmailService.sendOrderConfirmation(order);
-  console.log('Order confirmation emails sent successfully');
-} catch (emailError) {
-  console.error('Email sending failed:', {
-    orderId: order._id,
-    error: emailError.message,
-    adminEmail: process.env.ADMIN_EMAIL,
-    contactRecipient: process.env.CONTACT_RECIPIENT
-  });
-  // Don't fail the order creation, but log the error
-}
+try {
+      const emailResults = await EmailService.sendOrderConfirmation(order);
+      console.log('Order confirmation emails sent:', {
+        customer: emailResults.customerResult.accepted,
+        admin: emailResults.adminResult.accepted
+      });
+    } catch (emailError) {
+      console.error('Order confirmation email failed:', {
+        orderId: order._id,
+        error: emailError.message,
+        // Log the complete error for debugging
+        fullError: process.env.NODE_ENV === 'development' ? emailError : undefined
+      });
+      
+      // Special handling for admin email failures
+      if (emailError.message.includes('admin email')) {
+        // Try fallback email if configured
+        const fallbackEmail = process.env.FALLBACK_ADMIN_EMAIL;
+        if (fallbackEmail) {
+          console.log('Attempting fallback admin email to:', fallbackEmail);
+          await EmailService.sendEmail({
+            to: fallbackEmail,
+            subject: `[URGENT] Failed to send order notification for #${order._id}`,
+            text: `Check the system logs for order ${order._id}. The admin notification failed to send.`
+          });
+        }
+      }
+    }
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],

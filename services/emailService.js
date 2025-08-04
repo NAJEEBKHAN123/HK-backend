@@ -59,51 +59,57 @@ class EmailService {
   }
 
   // Order-related email methods
- async sendOrderConfirmation(order) {
+// services/emailService.js
+async sendOrderConfirmation(order) {
   const customerEmail = order.customerDetails.email;
-  
-  console.log('Attempting to send order confirmation to:', {
-    customer: customerEmail,
-    admin: process.env.ADMIN_EMAIL || process.env.CONTACT_RECIPIENT
+  const adminEmail = process.env.ADMIN_EMAIL || process.env.CONTACT_RECIPIENT;
+
+  console.log('[Email Service] Preparing to send order confirmation emails', {
+    orderId: order._id,
+    customerEmail,
+    adminEmail
   });
 
   try {
-    // Send to customer
-    await this.sendEmail({
+    // Customer email
+    const customerResult = await this.sendEmail({
       to: customerEmail,
       subject: `Your Order Confirmation - #${order._id}`,
-      html: this.getOrderConfirmationHtml(order)
+      html: this.getOrderConfirmationHtml(order),
+      text: this.getOrderConfirmationText(order)
     });
+    console.log('[Email Service] Customer email sent successfully', customerResult.messageId);
 
-    // Send to admin
-    const adminEmail = process.env.ADMIN_EMAIL || process.env.CONTACT_RECIPIENT;
-    if (!adminEmail) {
-      throw new Error('No admin email configured');
-    }
+    // Admin email - with different subject and additional details
+    const adminHtml = `
+      <h2>📦 New Order Notification #${order._id}</h2>
+      ${this.getOrderConfirmationHtml(order)}
+      <h3>👤 Customer Details</h3>
+      <p><strong>Name:</strong> ${order.customerDetails.fullName}</p>
+      <p><strong>Email:</strong> ${customerEmail}</p>
+      <p><strong>Phone:</strong> ${order.customerDetails.phone || 'Not provided'}</p>
+      <p><strong>Order Source:</strong> ${order.source || 'Direct'}</p>
+      ${order.referralCode ? `<p><strong>Referral Code:</strong> ${order.referralCode}</p>` : ''}
+    `;
 
-    await this.sendEmail({
+    const adminResult = await this.sendEmail({
       to: adminEmail,
-      subject: `[ADMIN] New Order - #${order._id}`,
-      html: `
-        <h2>New Order Notification</h2>
-        ${this.getOrderConfirmationHtml(order)}
-        <h3>Customer Details</h3>
-        <p><strong>Name:</strong> ${order.customerDetails.fullName}</p>
-        <p><strong>Email:</strong> ${customerEmail}</p>
-        <p><strong>Phone:</strong> ${order.customerDetails.phone || 'N/A'}</p>
-        <p><strong>Payment Status:</strong> ${order.status}</p>
-      `
+      subject: `[ACTION REQUIRED] New Order #${order._id}`,
+      html: adminHtml
     });
+    console.log('[Email Service] Admin email sent successfully', adminResult.messageId);
 
-    console.log('Successfully sent emails to both customer and admin');
+    return { customerResult, adminResult };
   } catch (error) {
-    console.error('Failed to send order confirmation emails:', {
+    console.error('[Email Service] Failed to send order confirmation emails', {
       error: error.message,
-      stack: error.stack
+      stack: error.stack,
+      orderId: order._id
     });
     throw error;
   }
 }
+
   async sendPaymentSuccess(order) {
     return this.sendEmail({
       to: order.customerDetails.email,
