@@ -60,55 +60,58 @@ class EmailService {
 
   // Order-related email methods
 // services/emailService.js
-async sendOrderConfirmation(order) {
-  const customerEmail = order.customerDetails.email;
-  const adminEmail = process.env.ADMIN_EMAIL || process.env.CONTACT_RECIPIENT;
+  async sendOrderConfirmation(order) {
+    const customerEmail = order.customerDetails.email;
+    const adminEmail = process.env.ADMIN_EMAIL || process.env.CONTACT_RECIPIENT;
 
-  console.log('[Email Service] Preparing to send order confirmation emails', {
-    orderId: order._id,
-    customerEmail,
-    adminEmail
-  });
-
-  try {
-    // Customer email
-    const customerResult = await this.sendEmail({
-      to: customerEmail,
-      subject: `Your Order Confirmation - #${order._id}`,
-      html: this.getOrderConfirmationHtml(order),
-      text: this.getOrderConfirmationText(order)
+    console.log('[Email Service] Preparing to send order confirmation emails', {
+      orderId: order._id,
+      customerEmail,
+      adminEmail
     });
-    console.log('[Email Service] Customer email sent successfully', customerResult.messageId);
 
-    // Admin email - with different subject and additional details
-    const adminHtml = `
-      <h2>📦 New Order Notification #${order._id}</h2>
-      ${this.getOrderConfirmationHtml(order)}
-      <h3>👤 Customer Details</h3>
-      <p><strong>Name:</strong> ${order.customerDetails.fullName}</p>
-      <p><strong>Email:</strong> ${customerEmail}</p>
-      <p><strong>Phone:</strong> ${order.customerDetails.phone || 'Not provided'}</p>
-      <p><strong>Order Source:</strong> ${order.source || 'Direct'}</p>
-      ${order.referralCode ? `<p><strong>Referral Code:</strong> ${order.referralCode}</p>` : ''}
-    `;
+    try {
+      // Customer email
+      const customerResult = await this.sendEmail({
+        to: customerEmail,
+        subject: `Your Order Confirmation - #${order._id}`,
+        html: this.getOrderConfirmationHtml(order),
+        text: this.getOrderConfirmationText(order)
+      });
+      console.log('[Email Service] Customer email sent successfully', customerResult.messageId);
 
-    const adminResult = await this.sendEmail({
-      to: adminEmail,
-      subject: `[ACTION REQUIRED] New Order #${order._id}`,
-      html: adminHtml
-    });
-    console.log('[Email Service] Admin email sent successfully', adminResult.messageId);
+      // Admin email - now using the consolidated table
+      const adminResult = await this.sendEmail({
+        to: adminEmail,
+        subject: `[ACTION REQUIRED] New Order #${order._id}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto;">
+            <h2 style="color: #d32f2f; border-bottom: 1px solid #d32f2f; padding-bottom: 8px;">
+              📦 New Order #${order._id}
+            </h2>
+            ${this.getOrderDetailsTable(order)}
+            <p style="margin-top: 20px; text-align: center;">
+              <a href="${process.env.ADMIN_DASHBOARD_URL}/orders/${order._id}" 
+                 style="background: #d32f2f; color: white; padding: 8px 16px; text-decoration: none; border-radius: 4px;">
+                View Order in Dashboard
+              </a>
+            </p>
+          </div>
+        `
+      });
+      console.log('[Email Service] Admin email sent successfully', adminResult.messageId);
 
-    return { customerResult, adminResult };
-  } catch (error) {
-    console.error('[Email Service] Failed to send order confirmation emails', {
-      error: error.message,
-      stack: error.stack,
-      orderId: order._id
-    });
-    throw error;
+      return { customerResult, adminResult };
+    } catch (error) {
+      console.error('[Email Service] Failed to send order confirmation emails', {
+        error: error.message,
+        stack: error.stack,
+        orderId: order._id
+      });
+      throw error;
+    }
   }
-}
+
 
   async sendPaymentSuccess(order) {
     return this.sendEmail({
@@ -163,7 +166,7 @@ async sendOrderConfirmation(order) {
     `;
   }
 
-  getOrderDetailsTable(order) {
+   getOrderDetailsTable(order) {
     return `
       <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
         <tr>
@@ -182,6 +185,32 @@ async sendOrderConfirmation(order) {
           <td style="padding: 8px; border: 1px solid #ddd;"><strong>Date</strong></td>
           <td style="padding: 8px; border: 1px solid #ddd;">${new Date(order.createdAt).toLocaleString()}</td>
         </tr>
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Customer Name</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${order.customerDetails.fullName}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Customer Email</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">
+            <a href="mailto:${order.customerDetails.email}">${order.customerDetails.email}</a>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Customer Phone</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">
+            ${order.customerDetails.phone || 'Not provided'}
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Order Source</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${order.source || 'Direct'}</td>
+        </tr>
+        ${order.referralCode ? `
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Referral Code</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${order.referralCode}</td>
+        </tr>
+        ` : ''}
         ${order.paymentConfirmedAt ? `
         <tr>
           <td style="padding: 8px; border: 1px solid #ddd;"><strong>Payment Date</strong></td>
@@ -210,9 +239,9 @@ async sendOrderConfirmation(order) {
     `;
   }
 
-  formatCurrency(amount) {
-    return `€${(amount / 100).toFixed(2).replace('.', ',')}`;
-  }
+   formatCurrency = (amount) => {
+    return `€${amount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
+  };
 
   // Contact form methods
   async sendContactEmail({ name, email, phone, message }) {
