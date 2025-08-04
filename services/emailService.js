@@ -1,35 +1,47 @@
 const nodemailer = require('nodemailer');
 
 class EmailService {
-  constructor() {
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
-      console.warn('⚠️ Email service not configured - emails will be logged but not sent');
-      this.transporter = null;
-      return;
-    }
-
-    this.transporter = nodemailer.createTransport({
-      host: process.env.EMAIL_HOST,
-      port: parseInt(process.env.EMAIL_PORT),
-      secure: process.env.EMAIL_SECURE === 'true',
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD
-      },
-      tls: {
-        rejectUnauthorized: false
-      }
-    });
-
-    this.verifyConnection().catch(err => {
-      console.error('❌ SMTP verification failed:', err.message);
-    });
+ constructor() {
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
+    console.warn('⚠️ Email service not configured');
+    this.transporter = null;
+    return;
   }
+
+  // Use these specific options for your Hosterion mail server
+  this.transporter = nodemailer.createTransport({
+    host: process.env.EMAIL_HOST,
+    port: parseInt(process.env.EMAIL_PORT),
+    secure: false, // Explicitly set to false
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASSWORD
+    },
+    tls: {
+      rejectUnauthorized: false // Needed for some servers
+    },
+    logger: true,
+    debug: true,
+    connectionTimeout: 10000, // 10 seconds
+    greetingTimeout: 10000,   // 10 seconds
+    socketTimeout: 10000      // 10 seconds
+  });
+
+  // Test connection immediately
+  this.verifyConnection().catch(err => {
+    console.error('SMTP Connection Error:', {
+      message: err.message,
+      code: err.code,
+      response: err.response
+    });
+  });
+}
 
   async verifyConnection() {
     if (!this.transporter) throw new Error('Email transporter not configured');
-    await this.transporter.verify();
-    console.log('✅ SMTP connection verified');
+    const result = await this.transporter.verify();
+    console.log('✅ SMTP connection verified', result);
+    return result;
   }
 
   async sendEmail(mailOptions) {
@@ -43,92 +55,132 @@ class EmailService {
     }
 
     try {
+      console.log('Attempting to send email:', {
+        from: mailOptions.from || `"${process.env.EMAIL_FROM_NAME}" <${process.env.EMAIL_FROM}>`,
+        to: mailOptions.to,
+        subject: mailOptions.subject
+      });
+
       const info = await this.transporter.sendMail({
         ...mailOptions,
         from: mailOptions.from || `"${process.env.EMAIL_FROM_NAME}" <${process.env.EMAIL_FROM}>`
       });
-      console.log('✅ Email sent:', info.messageId);
+
+      console.log('✅ Email sent successfully:', {
+        messageId: info.messageId,
+        response: info.response,
+        accepted: info.accepted,
+        rejected: info.rejected
+      });
       return info;
     } catch (error) {
-      console.error('❌ Email failed to send:', {
-        to: mailOptions.to,
-        error: error.message
+      console.error('❌ Email sending failed:', {
+        error: error.message,
+        stack: error.stack,
+        response: error.response,
+        responseCode: error.responseCode,
+        command: error.command,
+        mailOptions: {
+          to: mailOptions.to,
+          subject: mailOptions.subject
+        }
       });
       throw error;
     }
   }
 
-  // Order-related email methods
-// services/emailService.js
-   async sendOrderConfirmation(order) {
+  async sendOrderConfirmation(order) {
     const customerEmail = order.customerDetails.email;
     const adminEmail = process.env.ADMIN_EMAIL || process.env.CONTACT_RECIPIENT;
 
-    console.log('[Email Service] Preparing to send order confirmation emails', {
+    if (!customerEmail) {
+      throw new Error('Customer email is required for order confirmation');
+    }
+
+    console.log('Preparing order confirmation emails:', {
       orderId: order._id,
       customerEmail,
-      adminEmail
+      adminEmail,
+      customerEmailValid: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail),
+      adminEmailValid: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)
     });
 
     try {
-      // Customer email - without referral info
-      const customerResult = await this.sendEmail({
+      // Customer email
+      const customerMail = {
         to: customerEmail,
         subject: `Your Order Confirmation - #${order._id}`,
         html: this.getOrderConfirmationHtml(order),
-        text: this.getOrderConfirmationText(order)
-      });
+        text: this.getOrderConfirmationText(order),
+        headers: {
+          'X-Priority': '1',
+          'X-MSMail-Priority': 'High'
+        }
+      };
 
-      // Admin email - with full details including referral info
-      const adminHtml = `
-        <div style="font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto;">
-          <h2 style="color: #d32f2f; border-bottom: 1px solid #d32f2f; padding-bottom: 8px;">
-            📦 New Order #${order._id}
-          </h2>
-          ${this.getOrderDetailsTable(order, true)} <!-- true = admin view -->
-          <p style="margin-top: 20px; text-align: center;">
-            <a href="${process.env.ADMIN_DASHBOARD_URL}/orders/${order._id}" 
-               style="background: #d32f2f; color: white; padding: 8px 16px; text-decoration: none; border-radius: 4px;">
-              
-            </a>
-          </p>
-        </div>
-      `;
+      const customerResult = await this.sendEmail(customerMail);
+      console.log('Customer email result:', customerResult);
 
-      const adminResult = await this.sendEmail({
+      // Admin email
+      const adminMail = {
         to: adminEmail,
         subject: `[ACTION REQUIRED] New Order #${order._id}`,
-        html: adminHtml
-      });
+        html: this.getAdminOrderHtml(order),
+        headers: {
+          'X-Priority': '1',
+          'X-MSMail-Priority': 'High'
+        }
+      };
+
+      const adminResult = await this.sendEmail(adminMail);
+      console.log('Admin email result:', adminResult);
 
       return { customerResult, adminResult };
     } catch (error) {
-      console.error('[Email Service] Failed to send order confirmation emails', {
-        error: error.message,
-        stack: error.stack,
-        orderId: order._id
+      console.error('Order confirmation email failed:', {
+        orderId: order._id,
+        error: {
+          message: error.message,
+          stack: error.stack,
+          response: error.response,
+          code: error.code
+        }
       });
       throw error;
     }
   }
 
-
-  async sendPaymentSuccess(order) {
-    return this.sendEmail({
-      to: order.customerDetails.email,
-      subject: `Payment Received - Order #${order._id}`,
-      html: this.getPaymentSuccessHtml(order)
-    });
+  getAdminOrderHtml(order) {
+    return `
+      <div style="font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto;">
+        <h2 style="color: #d32f2f; border-bottom: 1px solid #d32f2f; padding-bottom: 8px;">
+          📦 New Order #${order._id}
+        </h2>
+        ${this.getOrderDetailsTable(order, true)}
+        ${order.source === 'REFERRAL' ? `
+          <div style="margin-top: 20px; background: #f5f5f5; padding: 15px; border-radius: 5px;">
+            <h3 style="margin-top: 0;">Referral Information</h3>
+            <p><strong>Referral Code:</strong> ${order.referralCode}</p>
+            <p><strong>Commission:</strong> ${this.formatCurrency(order.partnerCommission)}</p>
+          </div>
+        ` : ''}
+        <div style="margin-top: 30px; text-align: center;">
+          <a href="${process.env.ADMIN_DASHBOARD_URL}/orders/${order._id}" 
+             style="background: #d32f2f; color: white; padding: 10px 15px; text-decoration: none; border-radius: 4px;">
+            View Order in Dashboard
+          </a>
+        </div>
+      </div>
+    `;
   }
 
-  // Template methods
- getOrderConfirmationHtml(order) {
+  getOrderConfirmationHtml(order) {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: #2c3e50;">Order Confirmation</h2>
         <p>Thank you for your order. Here are your order details:</p>
         
-        ${this.getOrderDetailsTable(order, false)} <!-- false = not admin -->
+        ${this.getOrderDetailsTable(order, false)}
         
         <p style="margin-top: 20px;">
           <strong>Next Steps:</strong> 
@@ -142,7 +194,7 @@ class EmailService {
         </div>
       </div>
     `;
-}
+  }
 
   getPaymentSuccessHtml(order) {
     return `
@@ -166,7 +218,7 @@ class EmailService {
     `;
   }
 
-   getOrderDetailsTable(order, isAdmin = false) {
+  getOrderDetailsTable(order, isAdmin = false) {
     return `
       <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
         <tr>
@@ -241,11 +293,10 @@ class EmailService {
     `;
   }
 
-   formatCurrency = (amount) => {
+  formatCurrency = (amount) => {
     return `€${amount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
   };
 
-  // Contact form methods
   async sendContactEmail({ name, email, phone, message }) {
     return this.sendEmail({
       to: process.env.CONTACT_RECIPIENT,
@@ -270,6 +321,14 @@ class EmailService {
         <br/>
         <p>Regards,<br/>${process.env.EMAIL_FROM_NAME}</p>
       `
+    });
+  }
+
+  async sendPaymentSuccess(order) {
+    return this.sendEmail({
+      to: order.customerDetails.email,
+      subject: `Payment Received - Order #${order._id}`,
+      html: this.getPaymentSuccessHtml(order)
     });
   }
 }
