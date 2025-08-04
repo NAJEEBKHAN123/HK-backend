@@ -2,6 +2,8 @@ const Client = require('../model/Client');
 const Partner = require('../model/Partner');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const Order = require('../model/Order');
+const EmailService = require('../services/emailService'); // ADDED MISSING IMPORT
+const { logError, logInfo } = require('../utils/logger'); // ADDED LOGGER UTILITY
 
 const PRICING = {
   STARTER: 3900,
@@ -10,14 +12,52 @@ const PRICING = {
 };
 const COMMISSION_RATE = 0.10; // 10%
 
-// Helper function for error responses
-const handleErrorResponse = (res, error, action) => {
-  console.error(`Error while trying to ${action}:`, error);
+// Enhanced error handler
+const handleErrorResponse = (res, error, action, context = {}) => {
+  const errorId = Math.random().toString(36).substring(2, 9);
+  logError(`Error ${action}`, { 
+    error: error.message, 
+    stack: error.stack,
+    errorId,
+    ...context 
+  });
+  
   res.status(500).json({
     success: false,
     message: `Failed to ${action}`,
+    errorId,
     error: process.env.NODE_ENV === 'development' ? error.message : undefined
   });
+};
+
+// Enhanced email sending with retries
+const sendOrderEmailWithRetry = async (order, emailType, retries = 3) => {
+  try {
+    if (!order.customerDetails?.email) {
+      throw new Error('Missing customer email');
+    }
+
+    logInfo(`Sending ${emailType} email for order ${order._id}`, {
+      customerEmail: order.customerDetails.email
+    });
+
+    if (emailType === 'confirmation') {
+      await EmailService.sendOrderConfirmation(order);
+    } else if (emailType === 'payment') {
+      await EmailService.sendPaymentSuccess(order);
+    }
+
+    logInfo(`Successfully sent ${emailType} email for order ${order._id}`);
+  } catch (emailError) {
+    if (retries > 0) {
+      logError(`Retrying ${emailType} email (${retries} left) for order ${order._id}`, {
+        error: emailError.message
+      });
+      await new Promise(resolve => setTimeout(resolve, 1000 * (4 - retries))); // Exponential backoff
+      return sendOrderEmailWithRetry(order, emailType, retries - 1);
+    }
+    throw emailError;
+  }
 };
 
 exports.createOrder = async (req, res) => {
@@ -70,16 +110,22 @@ exports.createOrder = async (req, res) => {
 
     // Create the order
     const order = await Order.create(orderData);
+    console.log('order is created', order)
 
-    // Send order confirmation emails
+    // Send order confirmation emails with enhanced logging
     try {
-      await EmailService.sendOrderConfirmation(order);
+      await sendOrderEmailWithRetry(order, 'confirmation');
+      logInfo('Order confirmation email processed', { orderId: order._id });
     } catch (emailError) {
-      console.error('Failed to send order confirmation emails:', emailError);
-      // Don't fail the whole request if email fails
+      logError('Order confirmation email failed', {
+        orderId: order._id,
+        error: emailError.message,
+        stack: emailError.stack
+      });
+      // Continue with order creation even if email fails
     }
 
-    // Create Stripe checkout with FULL original price
+    // Create Stripe checkout
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
@@ -89,7 +135,7 @@ exports.createOrder = async (req, res) => {
             name: `${plan} Plan`,
             description: 'Company formation package'
           },
-          unit_amount: order.originalPrice * 100,
+          unit_amount: order.originalPrice,
         },
         quantity: 1,
       }],
@@ -107,7 +153,7 @@ exports.createOrder = async (req, res) => {
     order.stripeSessionId = session.id;
     await order.save();
 
-    // Increment partner.totalOrdersReferred if referral + client exists
+    // Update partner stats if applicable
     if (partner && clientId) {
       await Partner.findByIdAndUpdate(
         partner._id,
@@ -124,10 +170,12 @@ exports.createOrder = async (req, res) => {
     });
 
   } catch (error) {
-    handleErrorResponse(res, error, 'create order');
+    handleErrorResponse(res, error, 'create order', {
+      plan: req.body.plan,
+      customerEmail: req.body.customerDetails?.email
+    });
   }
 };
-
 
 exports.handleStripeWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
@@ -140,7 +188,7 @@ exports.handleStripeWebhook = async (req, res) => {
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
-    console.error('Webhook verification failed:', err);
+    logError('Stripe webhook verification failed', { error: err.message });
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
@@ -159,13 +207,22 @@ exports.handleStripeWebhook = async (req, res) => {
         { new: true }
       ).populate('referredBy');
 
+      if (!order) {
+        logError('Order not found for completed Stripe session', {
+          sessionId: session.id
+        });
+        return res.json({ received: true });
+      }
+
       // Send payment confirmation email
-      if (order) {
-        try {
-          await EmailService.sendPaymentSuccess(order);
-        } catch (emailError) {
-          console.error('Failed to send payment confirmation email:', emailError);
-        }
+      try {
+        await sendOrderEmailWithRetry(order, 'payment');
+        logInfo('Payment confirmation email sent', { orderId: order._id });
+      } catch (emailError) {
+        logError('Payment confirmation email failed', {
+          orderId: order._id,
+          error: emailError.message
+        });
       }
 
       // Process commission for referral orders
@@ -173,104 +230,18 @@ exports.handleStripeWebhook = async (req, res) => {
           order.referredBy && 
           !order.isCommissionProcessed) {
         
-        // Ensure commission is calculated
-        if (order.partnerCommission === 0) {
-          order.partnerCommission = Math.floor(order.originalPrice * COMMISSION_RATE);
-          order.finalPrice = order.originalPrice - order.partnerCommission;
-        }
-
-        try {
-          // Transfer to partner if they have Stripe account
-          if (order.referredBy.stripeAccountId) {
-            await stripe.transfers.create({
-              amount: order.partnerCommission * 100,
-              currency: 'eur',
-              destination: order.referredBy.stripeAccountId,
-              description: `Commission for order ${order._id}`
-            });
-
-            // Update partner with paid commission
-            await Partner.findByIdAndUpdate(order.referredBy._id, {
-              $inc: {
-                commissionEarned: order.partnerCommission,
-                commissionPaid: order.partnerCommission,
-                totalReferralSales: order.originalPrice
-              },
-              $addToSet: {
-                ordersReferred: order._id
-              }
-            });
-          } else {
-            // Just track earned commission if no Stripe account
-            await Partner.findByIdAndUpdate(order.referredBy._id, {
-              $inc: {
-                commissionEarned: order.partnerCommission,
-                totalReferralSales: order.originalPrice
-              },
-              $addToSet: {
-                ordersReferred: order._id
-              }
-            });
-          }
-
-          order.isCommissionProcessed = true;
-          await order.save();
-        } catch (transferErr) {
-          console.error('Commission processing failed:', transferErr);
-          // Mark as processed to avoid duplicate attempts
-          order.isCommissionProcessed = true;
-          await order.save();
-        }
+        await processCommission(order);
       }
     } catch (err) {
-      console.error('Webhook processing error:', err);
+      logError('Webhook processing error', {
+        eventId: event.id,
+        error: err.message,
+        stack: err.stack
+      });
     }
   }
 
   res.json({ received: true });
-};
-
-
-// Get all orders (admin)
-exports.getAllOrders = async (req, res) => {
-  try {
-    const { page = 1, limit = 10, search = '' } = req.query;
-    const skip = (page - 1) * limit;
-
-    const query = {};
-    if (search) {
-      query.$or = [
-        { 'customerDetails.fullName': { $regex: search, $options: 'i' } },
-        { 'customerDetails.email': { $regex: search, $options: 'i' } },
-        { plan: { $regex: search, $options: 'i' } },
-        { status: { $regex: search, $options: 'i' } }
-      ];
-    }
-
-    const orders = await Order.find(query)
-      .populate('client', 'name email')
-      .populate('referredBy', 'name email referralCode')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-
-    const total = await Order.countDocuments(query);
-
-    res.json({
-      success: true,
-      count: orders.length,
-      total,
-      page: Number(page),
-      pages: Math.ceil(total / limit),
-      data: orders
-    });
-  } catch (error) {
-    console.error('Error fetching orders:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch orders'
-    });
-  }
 };
 
 // Get single order
