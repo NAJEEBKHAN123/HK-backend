@@ -1,8 +1,4 @@
-// services/emailService.js
 const nodemailer = require('nodemailer');
-
-
-
 
 class EmailService {
   constructor() {
@@ -24,13 +20,6 @@ class EmailService {
         rejectUnauthorized: false
       }
     });
-
-    // console.log('Current SMTP config:', {
-    //   host: process.env.EMAIL_HOST,
-    //   port: process.env.EMAIL_PORT,
-    //   user: process.env.EMAIL_USER,
-    //   usingCustom: true
-    // });
 
     this.verifyConnection().catch(err => {
       console.error('❌ SMTP verification failed:', err.message);
@@ -69,7 +58,138 @@ class EmailService {
     }
   }
 
-  // Add the contact email functions here
+  // Order-related email methods
+  async sendOrderConfirmation(order) {
+    const customerEmail = order.customerDetails.email;
+    
+    // Send to customer
+    await this.sendEmail({
+      to: customerEmail,
+      subject: `Your Order Confirmation - #${order._id}`,
+      html: this.getOrderConfirmationHtml(order),
+      text: this.getOrderConfirmationText(order)
+    });
+
+    // Send to admin
+    await this.sendEmail({
+      to: process.env.ADMIN_EMAIL || process.env.CONTACT_RECIPIENT,
+      subject: `New Order Received - #${order._id}`,
+      html: `
+        <h2>New Order Notification</h2>
+        ${this.getOrderConfirmationHtml(order)}
+        <h3>Customer Details</h3>
+        <p><strong>Name:</strong> ${order.customerDetails.fullName}</p>
+        <p><strong>Email:</strong> ${customerEmail}</p>
+        <p><strong>Phone:</strong> ${order.customerDetails.phone || 'N/A'}</p>
+      `
+    });
+  }
+
+  async sendPaymentSuccess(order) {
+    return this.sendEmail({
+      to: order.customerDetails.email,
+      subject: `Payment Received - Order #${order._id}`,
+      html: this.getPaymentSuccessHtml(order)
+    });
+  }
+
+  // Template methods
+  getOrderConfirmationHtml(order) {
+    return `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #2c3e50;">Order Confirmation</h2>
+        <p>Thank you for your order. Here are your order details:</p>
+        
+        ${this.getOrderDetailsTable(order)}
+        
+        <p style="margin-top: 20px;">
+          <strong>Next Steps:</strong> 
+          ${order.status === 'completed' 
+            ? 'Your payment has been received and we are processing your order.' 
+            : 'Please complete your payment to proceed with your order.'}
+        </p>
+        
+        <div style="margin-top: 30px; font-size: 12px; color: #777;">
+          <p>© ${new Date().getFullYear()} ${process.env.EMAIL_FROM_NAME}. All rights reserved.</p>
+        </div>
+      </div>
+    `;
+  }
+
+  getPaymentSuccessHtml(order) {
+    return `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #4CAF50;">Payment Confirmed!</h2>
+        <p>We've successfully received your payment for order #${order._id}.</p>
+        
+        <h3 style="margin-top: 20px;">Next Steps:</h3>
+        <ol>
+          <li>Our team will review your order</li>
+          <li>You'll receive a confirmation within 24-48 hours</li>
+          <li>We'll contact you if we need additional information</li>
+        </ol>
+        
+        ${this.getOrderDetailsTable(order)}
+        
+        <p style="margin-top: 20px;">
+          <strong>Need help?</strong> Contact us at ${process.env.EMAIL_FROM}
+        </p>
+      </div>
+    `;
+  }
+
+  getOrderDetailsTable(order) {
+    return `
+      <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd; width: 30%;"><strong>Order ID</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${order._id}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Plan</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${order.plan}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Amount</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${this.formatCurrency(order.originalPrice)}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Date</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${new Date(order.createdAt).toLocaleString()}</td>
+        </tr>
+        ${order.paymentConfirmedAt ? `
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Payment Date</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${new Date(order.paymentConfirmedAt).toLocaleString()}</td>
+        </tr>
+        ` : ''}
+      </table>
+    `;
+  }
+
+  getOrderConfirmationText(order) {
+    return `
+      Order Confirmation
+      
+      Order ID: ${order._id}
+      Plan: ${order.plan}
+      Amount: ${this.formatCurrency(order.originalPrice)}
+      Date: ${new Date(order.createdAt).toLocaleString()}
+      
+      Thank you for your order!
+      ${order.status === 'completed' 
+        ? 'Your payment has been received and we are processing your order.' 
+        : 'Please complete your payment to proceed with your order.'}
+      
+      © ${new Date().getFullYear()} ${process.env.EMAIL_FROM_NAME}
+    `;
+  }
+
+  formatCurrency(amount) {
+    return `€${(amount / 100).toFixed(2).replace('.', ',')}`;
+  }
+
+  // Contact form methods
   async sendContactEmail({ name, email, phone, message }) {
     return this.sendEmail({
       to: process.env.CONTACT_RECIPIENT,
@@ -92,62 +212,10 @@ class EmailService {
         <h3>Hi ${name},</h3>
         <p>Thanks for reaching out. We have received your message and will get back to you shortly.</p>
         <br/>
-        <p>Regards,<br/>OuvrirSociete Team</p>
+        <p>Regards,<br/>${process.env.EMAIL_FROM_NAME}</p>
       `
     });
   }
-
-  
-
-  getOrderConfirmationHtml(order) {
-    return `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #4CAF50;">Payment Successful!</h2>
-        <p>Thank you for your order. Here are your order details:</p>
-        
-        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
-          <tr>
-            <td style="padding: 8px; border: 1px solid #ddd; width: 30%;"><strong>Order ID</strong></td>
-            <td style="padding: 8px; border: 1px solid #ddd;">${order._id}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px; border: 1px solid #ddd;"><strong>Plan</strong></td>
-            <td style="padding: 8px; border: 1px solid #ddd;">${order.plan}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px; border: 1px solid #ddd;"><strong>Amount</strong></td>
-            <td style="padding: 8px; border: 1px solid #ddd;">${this.formatCurrency(order.originalPrice  || order.amount)}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px; border: 1px solid #ddd;"><strong>Date</strong></td>
-            <td style="padding: 8px; border: 1px solid #ddd;">${new Date(order.createdAt).toLocaleString()}</td>
-          </tr>
-        </table>
-
-        <p>If you have any questions, please contact our support team.</p>
-        
-        <div style="margin-top: 30px; font-size: 12px; color: #777;">
-          <p>© ${new Date().getFullYear()} ${process.env.EMAIL_FROM_NAME || 'Your Company'}. All rights reserved.</p>
-        </div>
-      </div>
-    `;
-  }
-
-  getOrderConfirmationText(order) {
-    return `
-      Payment Successful!
-      
-      Order ID: ${order._id}
-      Plan: ${order.plan}
-      Amount: ${this.formatCurrency(order.originalPrice || order.amount)}
-      Date: ${new Date(order.createdAt).toLocaleString()}
-      
-      Thank you for your order!
-    `;
-  }
-    formatCurrency = (amount) => {
-    return `€${amount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
-  };
 }
 
 module.exports = new EmailService();
