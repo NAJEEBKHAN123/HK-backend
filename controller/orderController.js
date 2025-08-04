@@ -2,7 +2,6 @@ const Client = require('../model/Client');
 const Partner = require('../model/Partner');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const Order = require('../model/Order');
-const EmailService = require('../services/emailService');
 
 const PRICING = {
   STARTER: 3900,
@@ -11,6 +10,7 @@ const PRICING = {
 };
 const COMMISSION_RATE = 0.10; // 10%
 
+// Helper function for error responses
 const handleErrorResponse = (res, error, action) => {
   console.error(`Error while trying to ${action}:`, error);
   res.status(500).json({
@@ -24,6 +24,7 @@ exports.createOrder = async (req, res) => {
   try {
     const { plan, customerDetails, referralCode, clientId } = req.body;
 
+    // Validate input
     if (!plan || !customerDetails || !customerDetails.email) {
       return res.status(400).json({ 
         success: false,
@@ -38,6 +39,7 @@ exports.createOrder = async (req, res) => {
       });
     }
 
+    // Initialize order with full price
     const orderData = {
       plan,
       customerDetails,
@@ -50,6 +52,7 @@ exports.createOrder = async (req, res) => {
 
     let partner = null;
 
+    // Process referral if code exists
     if (referralCode) {
       partner = await Partner.findOne({ 
         referralCode,
@@ -65,15 +68,10 @@ exports.createOrder = async (req, res) => {
       }
     }
 
+    // Create the order
     const order = await Order.create(orderData);
 
-    // Send order confirmation email
-    try {
-      await EmailService.sendOrderConfirmation(order);
-    } catch (emailError) {
-      console.error('Failed to send order confirmation email:', emailError);
-    }
-
+    // Create Stripe checkout with FULL original price
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
@@ -83,7 +81,7 @@ exports.createOrder = async (req, res) => {
             name: `${plan} Plan`,
             description: 'Company formation package'
           },
-          unit_amount: order.originalPrice,
+          unit_amount: order.originalPrice * 100,
         },
         quantity: 1,
       }],
@@ -101,6 +99,7 @@ exports.createOrder = async (req, res) => {
     order.stripeSessionId = session.id;
     await order.save();
 
+    // 🔥 Increment partner.totalOrdersReferred if referral + client exists
     if (partner && clientId) {
       await Partner.findByIdAndUpdate(
         partner._id,
@@ -120,6 +119,7 @@ exports.createOrder = async (req, res) => {
     handleErrorResponse(res, error, 'create order');
   }
 };
+
 
 exports.handleStripeWebhook = async (req, res) => {
   const sig = req.headers['stripe-signature'];
@@ -151,32 +151,28 @@ exports.handleStripeWebhook = async (req, res) => {
         { new: true }
       ).populate('referredBy');
 
-      if (order) {
-        try {
-          await EmailService.sendPaymentSuccess(order);
-        } catch (emailError) {
-          console.error('Failed to send payment confirmation email:', emailError);
-        }
-      }
-
+      // Process commission for referral orders
       if (order?.source === 'REFERRAL' && 
           order.referredBy && 
           !order.isCommissionProcessed) {
         
+        // Ensure commission is calculated
         if (order.partnerCommission === 0) {
           order.partnerCommission = Math.floor(order.originalPrice * COMMISSION_RATE);
           order.finalPrice = order.originalPrice - order.partnerCommission;
         }
 
         try {
+          // Transfer to partner if they have Stripe account
           if (order.referredBy.stripeAccountId) {
             await stripe.transfers.create({
-              amount: order.partnerCommission,
+              amount: order.partnerCommission * 100,
               currency: 'eur',
               destination: order.referredBy.stripeAccountId,
               description: `Commission for order ${order._id}`
             });
 
+            // Update partner with paid commission
             await Partner.findByIdAndUpdate(order.referredBy._id, {
               $inc: {
                 commissionEarned: order.partnerCommission,
@@ -188,6 +184,7 @@ exports.handleStripeWebhook = async (req, res) => {
               }
             });
           } else {
+            // Just track earned commission if no Stripe account
             await Partner.findByIdAndUpdate(order.referredBy._id, {
               $inc: {
                 commissionEarned: order.partnerCommission,
@@ -203,6 +200,7 @@ exports.handleStripeWebhook = async (req, res) => {
           await order.save();
         } catch (transferErr) {
           console.error('Commission processing failed:', transferErr);
+          // Mark as processed to avoid duplicate attempts
           order.isCommissionProcessed = true;
           await order.save();
         }

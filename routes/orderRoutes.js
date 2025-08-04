@@ -9,11 +9,10 @@ router.post('/webhook', express.raw({ type: 'application/json' }), orderControll
 
 router.get('/:orderId/public', orderController.getPublicOrder); 
 // Protected routes
-// router.get('/', protect, verifyAdmin, orderController.getAllOrders);
+router.get('/', protect, verifyAdmin, orderController.getAllOrders);
 router.patch('/:id', protect, verifyAdmin, orderController.updateOrder);
 router.get('/:orderId', protect, orderController.getOrder);
 router.put('/:id/cancel', protect, orderController.cancelOrder);
-
 
 module.exports = router;
 
