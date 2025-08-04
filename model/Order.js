@@ -4,7 +4,7 @@ const orderSchema = new mongoose.Schema({
   plan: {
     type: String,
     required: true,
-    enum: ['STARTER', 'TURNKEY', 'PREMIUM']
+    enum: ['STARTER', 'SMART', 'PREMIUM']
   },
  customerDetails: {
   fullName: {

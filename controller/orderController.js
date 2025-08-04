@@ -6,7 +6,7 @@ const EmailService = require('../services/emailService');
 
 const PRICING = {
   STARTER: 3900,
-  TURNKEY: 4600,
+  SMART: 4600,
   PREMIUM: 9800
 };
 const COMMISSION_RATE = 0.10; // 10%
