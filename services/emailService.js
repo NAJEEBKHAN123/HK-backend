@@ -60,7 +60,7 @@ class EmailService {
 
   // Order-related email methods
 // services/emailService.js
-  async sendOrderConfirmation(order) {
+   async sendOrderConfirmation(order) {
     const customerEmail = order.customerDetails.email;
     const adminEmail = process.env.ADMIN_EMAIL || process.env.CONTACT_RECIPIENT;
 
@@ -71,35 +71,35 @@ class EmailService {
     });
 
     try {
-      // Customer email
+      // Customer email - without referral info
       const customerResult = await this.sendEmail({
         to: customerEmail,
         subject: `Your Order Confirmation - #${order._id}`,
         html: this.getOrderConfirmationHtml(order),
         text: this.getOrderConfirmationText(order)
       });
-      console.log('[Email Service] Customer email sent successfully', customerResult.messageId);
 
-      // Admin email - now using the consolidated table
+      // Admin email - with full details including referral info
+      const adminHtml = `
+        <div style="font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto;">
+          <h2 style="color: #d32f2f; border-bottom: 1px solid #d32f2f; padding-bottom: 8px;">
+            📦 New Order #${order._id}
+          </h2>
+          ${this.getOrderDetailsTable(order, true)} <!-- true = admin view -->
+          <p style="margin-top: 20px; text-align: center;">
+            <a href="${process.env.ADMIN_DASHBOARD_URL}/orders/${order._id}" 
+               style="background: #d32f2f; color: white; padding: 8px 16px; text-decoration: none; border-radius: 4px;">
+              View Order in Dashboard
+            </a>
+          </p>
+        </div>
+      `;
+
       const adminResult = await this.sendEmail({
         to: adminEmail,
         subject: `[ACTION REQUIRED] New Order #${order._id}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto;">
-            <h2 style="color: #d32f2f; border-bottom: 1px solid #d32f2f; padding-bottom: 8px;">
-              📦 New Order #${order._id}
-            </h2>
-            ${this.getOrderDetailsTable(order)}
-            <p style="margin-top: 20px; text-align: center;">
-              <a href="${process.env.ADMIN_DASHBOARD_URL}/orders/${order._id}" 
-                 style="background: #d32f2f; color: white; padding: 8px 16px; text-decoration: none; border-radius: 4px;">
-                View Order in Dashboard
-              </a>
-            </p>
-          </div>
-        `
+        html: adminHtml
       });
-      console.log('[Email Service] Admin email sent successfully', adminResult.messageId);
 
       return { customerResult, adminResult };
     } catch (error) {
@@ -122,13 +122,13 @@ class EmailService {
   }
 
   // Template methods
-  getOrderConfirmationHtml(order) {
+ getOrderConfirmationHtml(order) {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: #2c3e50;">Order Confirmation</h2>
         <p>Thank you for your order. Here are your order details:</p>
         
-        ${this.getOrderDetailsTable(order)}
+        ${this.getOrderDetailsTable(order, false)} <!-- false = not admin -->
         
         <p style="margin-top: 20px;">
           <strong>Next Steps:</strong> 
@@ -142,7 +142,7 @@ class EmailService {
         </div>
       </div>
     `;
-  }
+}
 
   getPaymentSuccessHtml(order) {
     return `
@@ -166,7 +166,7 @@ class EmailService {
     `;
   }
 
-   getOrderDetailsTable(order) {
+   getOrderDetailsTable(order, isAdmin = false) {
     return `
       <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
         <tr>
@@ -201,6 +201,7 @@ class EmailService {
             ${order.customerDetails.phone || 'Not provided'}
           </td>
         </tr>
+        ${isAdmin ? `
         <tr>
           <td style="padding: 8px; border: 1px solid #ddd;"><strong>Order Source</strong></td>
           <td style="padding: 8px; border: 1px solid #ddd;">${order.source || 'Direct'}</td>
@@ -210,6 +211,7 @@ class EmailService {
           <td style="padding: 8px; border: 1px solid #ddd;"><strong>Referral Code</strong></td>
           <td style="padding: 8px; border: 1px solid #ddd;">${order.referralCode}</td>
         </tr>
+        ` : ''}
         ` : ''}
         ${order.paymentConfirmedAt ? `
         <tr>
