@@ -59,21 +59,31 @@ class EmailService {
   }
 
   // Order-related email methods
-  async sendOrderConfirmation(order) {
-    const customerEmail = order.customerDetails.email;
-    
+ async sendOrderConfirmation(order) {
+  const customerEmail = order.customerDetails.email;
+  
+  console.log('Attempting to send order confirmation to:', {
+    customer: customerEmail,
+    admin: process.env.ADMIN_EMAIL || process.env.CONTACT_RECIPIENT
+  });
+
+  try {
     // Send to customer
     await this.sendEmail({
       to: customerEmail,
       subject: `Your Order Confirmation - #${order._id}`,
-      html: this.getOrderConfirmationHtml(order),
-      text: this.getOrderConfirmationText(order)
+      html: this.getOrderConfirmationHtml(order)
     });
 
     // Send to admin
+    const adminEmail = process.env.ADMIN_EMAIL || process.env.CONTACT_RECIPIENT;
+    if (!adminEmail) {
+      throw new Error('No admin email configured');
+    }
+
     await this.sendEmail({
-      to: process.env.ADMIN_EMAIL || process.env.CONTACT_RECIPIENT,
-      subject: `New Order Received - #${order._id}`,
+      to: adminEmail,
+      subject: `[ADMIN] New Order - #${order._id}`,
       html: `
         <h2>New Order Notification</h2>
         ${this.getOrderConfirmationHtml(order)}
@@ -81,10 +91,19 @@ class EmailService {
         <p><strong>Name:</strong> ${order.customerDetails.fullName}</p>
         <p><strong>Email:</strong> ${customerEmail}</p>
         <p><strong>Phone:</strong> ${order.customerDetails.phone || 'N/A'}</p>
+        <p><strong>Payment Status:</strong> ${order.status}</p>
       `
     });
-  }
 
+    console.log('Successfully sent emails to both customer and admin');
+  } catch (error) {
+    console.error('Failed to send order confirmation emails:', {
+      error: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
+}
   async sendPaymentSuccess(order) {
     return this.sendEmail({
       to: order.customerDetails.email,

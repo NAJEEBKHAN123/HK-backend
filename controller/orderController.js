@@ -68,11 +68,18 @@ exports.createOrder = async (req, res) => {
     const order = await Order.create(orderData);
 
     // Send order confirmation email
-    try {
-      await EmailService.sendOrderConfirmation(order);
-    } catch (emailError) {
-      console.error('Failed to send order confirmation email:', emailError);
-    }
+   try {
+  await EmailService.sendOrderConfirmation(order);
+  console.log('Order confirmation emails sent successfully');
+} catch (emailError) {
+  console.error('Email sending failed:', {
+    orderId: order._id,
+    error: emailError.message,
+    adminEmail: process.env.ADMIN_EMAIL,
+    contactRecipient: process.env.CONTACT_RECIPIENT
+  });
+  // Don't fail the order creation, but log the error
+}
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
