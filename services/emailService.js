@@ -168,11 +168,7 @@ class EmailService {
         <h2 style="color: #2c3e50;">Order Confirmation</h2>
         <p>Thank you for your order. Here are your order details:</p>
         ${this.getOrderDetailsTable(order, false)}
-        <p><strong>Next Steps:</strong> ${
-          order.status === 'completed'
-            ? 'Your payment has been received and we are processing your order.'
-            : 'Please complete your payment to proceed with your order.'
-        }</p>
+       
         <p style="font-size: 12px; color: #777;">© ${new Date().getFullYear()} ${process.env.EMAIL_FROM_NAME}. All rights reserved.</p>
       </div>
     `;
