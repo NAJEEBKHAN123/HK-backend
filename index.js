@@ -13,7 +13,6 @@ const clientRoutes = require("./routes/clientRoute");
 
 const app = express();
 
-// Enhanced CORS configuration
 const allowedOrigins = [
   "http://localhost:5173",
   "https://www.ouvrir-societe-hong-kong.fr",  
@@ -24,6 +23,7 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: function (origin, callback) {
+      // Allow requests with no origin (Postman, server-to-server)
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
@@ -36,23 +36,6 @@ app.use(
   })
 );
 
-app.use(
-  cors({
-    origin: process.env.FRONTEND_URL || "http://localhost:5173",
-    credentials: true,
-
-    origin: function (origin, callback) {
-      // Allow requests with no origin (e.g., Postman) or matching origins
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error("CORS not allowed from this origin: " + origin));
-      }
-    },
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
 
 // Middleware
 app.use(express.json());
