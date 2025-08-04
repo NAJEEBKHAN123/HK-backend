@@ -192,22 +192,62 @@ class EmailService {
     `;
   }
 
-  getOrderDetailsTable(order, isAdmin = false) {
+ getOrderDetailsTable(order, isAdmin = false) {
     return `
-      <table style="width: 100%; border-collapse: collapse;">
-        <tr><td><strong>Order ID</strong></td><td>${order._id}</td></tr>
-        <tr><td><strong>Plan</strong></td><td>${order.plan}</td></tr>
-        <tr><td><strong>Amount</strong></td><td>${this.formatCurrency(order.originalPrice)}</td></tr>
-        <tr><td><strong>Date</strong></td><td>${new Date(order.createdAt).toLocaleString()}</td></tr>
-        <tr><td><strong>Customer Name</strong></td><td>${order.customerDetails.fullName}</td></tr>
-        <tr><td><strong>Customer Email</strong></td><td>${order.customerDetails.email}</td></tr>
-        <tr><td><strong>Customer Phone</strong></td><td>${order.customerDetails.phone || 'N/A'}</td></tr>
-        ${isAdmin && order.referralCode ? `<tr><td><strong>Referral Code</strong></td><td>${order.referralCode}</td></tr>` : ''}
-        ${order.paymentConfirmedAt ? `<tr><td><strong>Payment Date</strong></td><td>${new Date(order.paymentConfirmedAt).toLocaleString()}</td></tr>` : ''}
+      <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd; width: 30%;"><strong>Order ID</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${order._id}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Plan</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${order.plan}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Amount</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${this.formatCurrency(order.originalPrice)}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Date</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${new Date(order.createdAt).toLocaleString()}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Customer Name</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${order.customerDetails.fullName}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Customer Email</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">
+            <a href="mailto:${order.customerDetails.email}">${order.customerDetails.email}</a>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Customer Phone</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">
+            ${order.customerDetails.phone || 'Not provided'}
+          </td>
+        </tr>
+        ${isAdmin ? `
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Order Source</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${order.source || 'Direct'}</td>
+        </tr>
+        ${order.referralCode ? `
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Referral Code</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${order.referralCode}</td>
+        </tr>
+        ` : ''}
+        ` : ''}
+        ${order.paymentConfirmedAt ? `
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Payment Date</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${new Date(order.paymentConfirmedAt).toLocaleString()}</td>
+        </tr>
+        ` : ''}
       </table>
     `;
   }
-
   getOrderConfirmationText(order) {
     return `
 Order Confirmation
