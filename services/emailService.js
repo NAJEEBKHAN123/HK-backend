@@ -162,17 +162,55 @@ class EmailService {
     });
   }
 
-  getOrderConfirmationHtml(order) {
-    return `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #2c3e50;">Order Confirmation</h2>
-        <p>Thank you for your order. Here are your order details:</p>
-        ${this.getOrderDetailsTable(order, false)}
-       
-        <p style="font-size: 12px; color: #777;">© ${new Date().getFullYear()} ${process.env.EMAIL_FROM_NAME}. All rights reserved.</p>
+  // Update your getOrderConfirmationHtml method:
+getOrderConfirmationHtml(order) {
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+      <title>Order Confirmation #${order._id}</title>
+      <style>
+        /* Inline all CSS */
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { color: #2c3e50; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        .footer { font-size: 12px; color: #777; border-top: 1px solid #eee; padding-top: 10px; margin-top: 20px; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        th, td { padding: 12px; border: 1px solid #ddd; text-align: left; }
+        th { background-color: #f9f9f9; }
+        .button { background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <h2>Order Confirmation</h2>
       </div>
-    `;
-  }
+      <p>Dear ${order.customerDetails.fullName},</p>
+      <p>Thank you for your order with <strong>Ouvrir Société Hong Kong</strong>. Here are your order details:</p>
+      
+      ${this.getOrderDetailsTable(order, false)}
+      
+      <p>Next steps in your order process:</p>
+      <ol>
+        <li>We've received your order</li>
+        <li>Our team is reviewing your details</li>
+        <li>We'll contact you within 24 hours</li>
+      </ol>
+      
+      <p>If you have any questions, please reply to this email or contact us at <a href="mailto:bonjour@ouvrir-societe-hong-kong.fr">bonjour@ouvrir-societe-hong-kong.fr</a>.</p>
+      
+      <div class="footer">
+        <p>© ${new Date().getFullYear()} Ouvrir Société Hong Kong. All rights reserved.</p>
+        <p>
+          <a href="https://ouvrir-societe-hong-kong.fr/contact">Contact Us</a> | 
+          <a href="https://ouvrir-societe-hong-kong.fr/privacy">Privacy Policy</a> | 
+          <a href="https://ouvrir-societe-hong-kong.fr/unsubscribe">Unsubscribe</a>
+        </p>
+      </div>
+    </body>
+    </html>
+  `;
+}
 
   getAdminOrderHtml(order) {
     return `
@@ -184,7 +222,7 @@ class EmailService {
             ? `<div style="margin-top: 20px;">
                 <h3>Referral Info</h3>
                 <p><strong>Referral Code:</strong> ${order.referralCode}</p>
-              
+                <p><strong>Commission:</strong> ${this.formatCurrency(order.partnerCommission)}</p>
               </div>`
             : ''
         }
@@ -203,7 +241,10 @@ class EmailService {
           <td style="padding: 8px; border: 1px solid #ddd;"><strong>Plan</strong></td>
           <td style="padding: 8px; border: 1px solid #ddd;">${order.plan}</td>
         </tr>
-        
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Amount</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${this.formatCurrency(order.originalPrice)}</td>
+        </tr>
         <tr>
           <td style="padding: 8px; border: 1px solid #ddd;"><strong>Date</strong></td>
           <td style="padding: 8px; border: 1px solid #ddd;">${new Date(order.createdAt).toLocaleString()}</td>
@@ -245,27 +286,40 @@ class EmailService {
       </table>
     `;
   }
-  getOrderConfirmationText(order) {
-    return `
-Order Confirmation
+getOrderConfirmationText(order) {
+  return `
+Order Confirmation #${order._id}
+=================================
+
+Dear ${order.customerDetails.fullName},
+
+Thank you for your order with Ouvrir Société Hong Kong. Here are your order details:
 
 Order ID: ${order._id}
 Plan: ${order.plan}
 Amount: ${this.formatCurrency(order.originalPrice)}
 Date: ${new Date(order.createdAt).toLocaleString()}
 
-${
-  order.status === 'completed'
-    ? 'Your payment has been received and we are processing your order.'
-    : 'Please complete your payment to proceed with your order.'
+Next steps:
+1. We've received your order
+2. Our team is reviewing your details
+3. We'll contact you within 24 hours
+
+If you have any questions, please reply to this email or contact us at bonjour@ouvrir-societe-hong-kong.fr.
+
+---
+Ouvrir Société Hong Kong
+https://ouvrir-societe-hong-kong.fr
+
+Contact Us: https://ouvrir-societe-hong-kong.fr/contact
+Privacy Policy: https://ouvrir-societe-hong-kong.fr/privacy
+Unsubscribe: https://ouvrir-societe-hong-kong.fr/unsubscribe
+  `;
 }
 
-Thank you for your order.
-${process.env.EMAIL_FROM_NAME}
-    `;
+  formatCurrency(amount) {
+    return `€${amount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
   }
-
-  
 }
 
 module.exports = new EmailService();
