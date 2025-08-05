@@ -203,10 +203,7 @@ class EmailService {
           <td style="padding: 8px; border: 1px solid #ddd;"><strong>Plan</strong></td>
           <td style="padding: 8px; border: 1px solid #ddd;">${order.plan}</td>
         </tr>
-        <tr>
-          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Amount</strong></td>
-          <td style="padding: 8px; border: 1px solid #ddd;">${this.formatCurrency(order.originalPrice)}</td>
-        </tr>
+        
         <tr>
           <td style="padding: 8px; border: 1px solid #ddd;"><strong>Date</strong></td>
           <td style="padding: 8px; border: 1px solid #ddd;">${new Date(order.createdAt).toLocaleString()}</td>
@@ -268,9 +265,7 @@ ${process.env.EMAIL_FROM_NAME}
     `;
   }
 
-  formatCurrency(amount) {
-    return `€${amount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
-  }
+  
 }
 
 module.exports = new EmailService();
