@@ -179,6 +179,15 @@ class EmailService {
       <div style="font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto;">
         <h2 style="color: #d32f2f;">📦 New Order #${order._id}</h2>
         ${this.getOrderDetailsTable(order, true)}
+        ${
+          order.source === 'REFERRAL'
+            ? `<div style="margin-top: 20px;">
+                <h3>Referral Info</h3>
+                <p><strong>Referral Code:</strong> ${order.referralCode}</p>
+              
+              </div>`
+            : ''
+        }
       </div>
     `;
   }
@@ -193,6 +202,10 @@ class EmailService {
         <tr>
           <td style="padding: 8px; border: 1px solid #ddd;"><strong>Plan</strong></td>
           <td style="padding: 8px; border: 1px solid #ddd;">${order.plan}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border: 1px solid #ddd;"><strong>Amount</strong></td>
+          <td style="padding: 8px; border: 1px solid #ddd;">${this.formatCurrency(order.originalPrice)}</td>
         </tr>
         <tr>
           <td style="padding: 8px; border: 1px solid #ddd;"><strong>Date</strong></td>
@@ -255,7 +268,9 @@ ${process.env.EMAIL_FROM_NAME}
     `;
   }
 
-  
+  formatCurrency(amount) {
+    return `€${amount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
+  }
 }
 
 module.exports = new EmailService();
