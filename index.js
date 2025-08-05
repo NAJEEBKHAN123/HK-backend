@@ -62,6 +62,10 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+app.get('/', (req, res) =>{
+  res.send("Home page")
+})
+
 // Error Handling Middleware
 app.use((err, req, res, next) => {
   console.error(`[${new Date().toISOString()}] Error:`, err.stack);
