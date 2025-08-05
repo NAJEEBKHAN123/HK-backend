@@ -203,8 +203,7 @@ getOrderConfirmationHtml(order) {
         <p>© ${new Date().getFullYear()} Ouvrir Société Hong Kong. All rights reserved.</p>
         <p>
           <a href="https://ouvrir-societe-hong-kong.fr/contact">Contact Us</a> | 
-          <a href="https://ouvrir-societe-hong-kong.fr/privacy">Privacy Policy</a> | 
-          <a href="https://ouvrir-societe-hong-kong.fr/unsubscribe">Unsubscribe</a>
+          <a href="https://ouvrir-societe-hong-kong.fr/legal/privacy">Privacy Policy</a> | 
         </p>
       </div>
     </body>
