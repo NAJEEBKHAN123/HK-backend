@@ -18,7 +18,7 @@ const inviteSchema = new mongoose.Schema({
   },
   expiresAt: {
     type: Date,
-    default: () => new Date(Date.now() + 25*365*24*60*60*1000) // 25 years
+    default: () => new Date(Date.now() + 35*365*24*60*60*1000) // 35 years
   },
   used: {
     type: Boolean,

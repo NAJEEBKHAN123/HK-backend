@@ -95,7 +95,10 @@ const partnerSchema = new mongoose.Schema({
 
 // Virtual Properties
 partnerSchema.virtual('referralLink').get(function() {
-  return `${process.env.FRONTEND_URL}/signup?ref=${this.referralCode}`;
+  const frontendUrl = process.env.NODE_ENV === 'production' 
+    ? process.env.FRONTEND_URL_PROD 
+    : process.env.FRONTEND_URL;
+  return `${frontendUrl}/signup?ref=${this.referralCode}`;
 });
 
 partnerSchema.virtual('totalClientsReferred').get(function() {
