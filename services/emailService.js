@@ -179,15 +179,6 @@ class EmailService {
       <div style="font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto;">
         <h2 style="color: #d32f2f;">📦 New Order #${order._id}</h2>
         ${this.getOrderDetailsTable(order, true)}
-        ${
-          order.source === 'REFERRAL'
-            ? `<div style="margin-top: 20px;">
-                <h3>Referral Info</h3>
-                <p><strong>Referral Code:</strong> ${order.referralCode}</p>
-                <p><strong>Commission:</strong> ${this.formatCurrency(order.partnerCommission)}</p>
-              </div>`
-            : ''
-        }
       </div>
     `;
   }
