@@ -1,7 +1,7 @@
 // deleteAllOrders.js
 
 const mongoose = require('mongoose');
-const Order = require('../model/Order'); // Adjust path if needed
+const Order = require('../model/PartnerInvite'); // Adjust path if needed
 
 // ✅ Use your actual Atlas DB URI
 const MONGO_URI = 'mongodb+srv://najeebkhan:najeebkhan12@user-management-cluster.zkw9a.mongodb.net/CareerSociete?retryWrites=true&w=majority&appName=user-management-cluster';
