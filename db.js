@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const connectDB = async () => {
   try {
-    const conn = await mongoose.connect(process.env.DB_URL, {
+    await mongoose.connect(process.env.DB_URL, {
       // Remove deprecated options
       serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
       maxPoolSize: 10, // Maximum number of sockets in the connection pool
