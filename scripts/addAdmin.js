@@ -1,9 +1,8 @@
 require("dotenv").config();
 const mongoose = require("mongoose");
-const bcrypt = require("bcryptjs");
-const Admin = require("../model/userModel");
+const Admin = require("../model/adminModel");
 
-// ✅ Make sure your .env file has DB_URL set, or you can replace it directly with your connection string
+// Connect to MongoDB
 mongoose.connect(process.env.DB_URL, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
@@ -11,12 +10,14 @@ mongoose.connect(process.env.DB_URL, {
 
 const addAdmin = async () => {
   try {
-    const hashedPassword = await bcrypt.hash("admin123", 10); // ✅ password as string
+    // Delete existing admin if any
+    await Admin.deleteOne({ email: "l.martin@csqi.ro" });
 
+    // Create new admin (password will be hashed automatically by schema)
     const newAdmin = new Admin({
-      name: "Najeeb",
-      email: "admin@example.com",
-      password: hashedPassword,
+      name: "Martin Ludovic",
+      email: "l.martin@csqi.ro",
+      password: "Ludovic2609!" // ❌ Do NOT hash manually
     });
 
     await newAdmin.save();
