@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const DBConnection = require("./db");
+
 const bookingRouter = require("./routes/booking");
 const contactRouter = require("./routes/contact.route");
 const orderRouter = require("./routes/orderRoutes");
@@ -15,15 +16,14 @@ const app = express();
 
 const allowedOrigins = [
   "http://localhost:5173",
-  "https://www.ouvrir-societe-hong-kong.fr",  
-  "https://ouvrir-societe-hong-kong.fr",  
+  "https://www.ouvrir-societe-hong-kong.fr",
+  "https://ouvrir-societe-hong-kong.fr",
   "https://backend.ouvrir-societe-hong-kong.fr"
 ];
 
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow requests with no origin (Postman, server-to-server)
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
@@ -36,15 +36,14 @@ app.use(
   })
 );
 
-
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Database Connection
+// DB connection
 DBConnection();
 
-// Routes
+// ✅ Routes — all relative, no full URLs
 app.use("/api/bookings", bookingRouter);
 app.use("/api/contact", contactRouter);
 app.use("/api/orders", orderRouter);
@@ -54,7 +53,7 @@ app.use("/api/partner-auth", partnerAuthRoutes);
 app.use("/api/partner-admin", partnerAdminRoutes);
 app.use("/api/client", clientRoutes);
 
-// Health Check
+// Health check
 app.get("/api/health", (req, res) => {
   res.status(200).json({
     status: "healthy",
@@ -62,29 +61,26 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-app.get('/', (req, res) =>{
-  res.send("Home page")
-})
+// Home route
+app.get("/", (req, res) => {
+  res.send("Home page");
+});
 
-// Error Handling Middleware
+// Global error handler
 app.use((err, req, res, next) => {
   console.error(`[${new Date().toISOString()}] Error:`, err.stack);
-
   res.status(500).json({
     success: false,
     message:
       process.env.NODE_ENV === "development"
         ? err.message
         : "Internal Server Error",
-    ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
   });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(
-    `Server running in ${
-      process.env.NODE_ENV || "development"
-    } mode on port ${PORT}`
+    `Server running in ${process.env.NODE_ENV || "development"} mode on port ${PORT}`
   );
 });
