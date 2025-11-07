@@ -13,29 +13,36 @@ const clientRoutes = require("./routes/clientRoute");
 
 const app = express();
 
+// ✅ Allowed origins
 const allowedOrigins = [
   "http://localhost:5173",
-  "https://www.ouvrir-societe-hong-kong.fr",  
-  "https://ouvrir-societe-hong-kong.fr",  
-  "https://backend.ouvrir-societe-hong-kong.fr"
+  "https://ouvrir-societe-hong-kong.fr",
+  "https://www.ouvrir-societe-hong-kong.fr",
 ];
 
+// ✅ CORS setup
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow requests with no origin (Postman, server-to-server)
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error("CORS not allowed from this origin: " + origin));
+      // Allow requests with no origin (like Postman, or same-server calls)
+      if (!origin) return callback(null, true);
+
+      // Check if origin matches one of the allowed domains
+      if (allowedOrigins.some((o) => origin.startsWith(o))) {
+        return callback(null, true);
       }
+
+      console.warn(`❌ CORS blocked from origin: ${origin}`);
+      return callback(new Error("CORS not allowed from this origin: " + origin));
     },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
+// ✅ Handle preflight requests globally
+app.options("*", cors());
 
 // Middleware
 app.use(express.json());
@@ -62,9 +69,10 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-app.get('/', (req, res) =>{
-  res.send("Home page")
-})
+// Default route
+app.get("/", (req, res) => {
+  res.send("Home page");
+});
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
@@ -80,10 +88,11 @@ app.use((err, req, res, next) => {
   });
 });
 
+// Server Start
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(
-    `Server running in ${
+    `✅ Server running in ${
       process.env.NODE_ENV || "development"
     } mode on port ${PORT}`
   );
