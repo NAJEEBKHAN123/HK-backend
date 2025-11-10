@@ -4,20 +4,24 @@ const cors = require("cors");
 
 const app = express();
 
-app.use(cors());
+// Simple CORS
+app.use(cors({
+  origin: ["http://localhost:5173", "https://ouvrir-societe-hong-kong.fr"],
+  credentials: true
+}));
+
 app.use(express.json());
 
-// Test route - if this works, the problem is in your routes
-app.get("/", (req, res) => {
-  res.send("Basic server is working");
-});
-
+// Test route without any external routes
 app.get("/api/health", (req, res) => {
-  res.json({ status: "OK", message: "Basic routes work" });
+  res.json({ status: "healthy", message: "Basic server working" });
 });
 
-const PORT = 3001;
+app.get("/", (req, res) => {
+  res.json({ message: "Server is running" });
+});
+
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Test server running on port ${PORT}`);
-  console.log("If this works, the problem is in your route files");
+  console.log(`✅ Basic server running on port ${PORT}`);
 });
