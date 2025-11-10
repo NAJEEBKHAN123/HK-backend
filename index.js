@@ -3,7 +3,15 @@ const express = require("express");
 const cors = require("cors");
 const DBConnection = require("./db");
 
+const bookingRouter = require("./routes/booking");
+const contactRouter = require("./routes/contact.route");
+const orderRouter = require("./routes/orderRoutes");
 const adminRoutes = require("./routes/superAdminRoute");
+const paymentRoutes = require("./routes/paymentRoutes");
+const partnerAuthRoutes = require("./routes/partnerAuth");
+const partnerAdminRoutes = require("./routes/admin");
+const clientRoutes = require("./routes/clientRoute");
+
 
 const app = express();
 
@@ -37,6 +45,13 @@ app.use(express.urlencoded({ extended: true }));
 
 // Routes
 app.use("/api/admin", adminRoutes);
+app.use("/api/bookings", bookingRouter);
+app.use("/api/contact", contactRouter);
+app.use("/api/orders", orderRouter);
+app.use("/api/payments", paymentRoutes);
+app.use("/api/partner-auth", partnerAuthRoutes);
+app.use("/api/partner-admin", partnerAdminRoutes);
+app.use("/api/client", clientRoutes);
 
 // Health check
 app.get("/api/health", (req, res) => {
