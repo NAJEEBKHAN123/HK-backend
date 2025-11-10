@@ -7,7 +7,7 @@ const adminRoutes = require("./routes/superAdminRoute");
 
 const app = express();
 
-// ✅ SIMPLIFIED - Just pass the array directly
+// ✅ CORS - Must be FIRST, before any other middleware
 app.use(cors({
   origin: [
     "http://localhost:5173",
@@ -24,8 +24,16 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// DB connection
-DBConnection();
+// DB connection - wrap in try-catch
+(async () => {
+  try {
+    await DBConnection();
+    console.log("✅ Database connected");
+  } catch (error) {
+    console.error("❌ Database connection failed:", error.message);
+    // Don't exit - let the app run without DB for health checks
+  }
+})();
 
 // Routes
 app.use("/api/admin", adminRoutes);
@@ -49,13 +57,22 @@ app.get("/", (req, res) => {
 // Global error handler
 app.use((err, req, res, next) => {
   console.error(`[${new Date().toISOString()}] Error:`, err.message);
+  console.error(err.stack); // ✅ Log full stack trace
   res.status(500).json({
     success: false,
     message: process.env.NODE_ENV === "development" ? err.message : "Internal Server Error",
   });
 });
 
+// ✅ Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running in ${process.env.NODE_ENV || "development"} mode on port ${PORT}`);
 });
+
+// ✅ Export for Vercel serverless
+module.exports = app;
