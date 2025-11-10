@@ -11,13 +11,13 @@ mongoose.connect(process.env.DB_URL, {
 const addAdmin = async () => {
   try {
     // Delete existing admin if any
-    await Admin.deleteOne({ email: "l.martin@csqi.ro" });
+    await Admin.deleteOne({ email: "a@gmail.com" });
 
     // Create new admin (password will be hashed automatically by schema)
     const newAdmin = new Admin({
-      name: "Martin Ludovic",
-      email: "l.martin@csqi.ro",
-      password: "Ludovic2609!" // ❌ Do NOT hash manually
+      name: "aa",
+      email: "a@gmail.com",
+      password: "111222" // ❌ Do NOT hash manually
     });
 
     await newAdmin.save();
