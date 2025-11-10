@@ -10,7 +10,7 @@ const app = express();
 const allowedOrigins = [
   "http://localhost:5173",
   "https://www.ouvrir-societe-hong-kong.fr",
-  "https://ouvrir-societe-hong-kong.fr",
+  "https://ouvrir-societe-hong-kong.fr",  // ✅ This is already there
   "https://hk-backend-tau.vercel.app"
 ];
 
