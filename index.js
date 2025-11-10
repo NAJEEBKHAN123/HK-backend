@@ -36,7 +36,7 @@ app.use(express.urlencoded({ extended: true }));
 (async () => {
   try {
     await DBConnection();
-    console.log("✅ Database connected");
+    console.log("✅ Database connected successfully");
   } catch (error) {
     console.error("❌ Database connection failed:", error.message);
     // Don't exit - let the app run without DB for health checks
