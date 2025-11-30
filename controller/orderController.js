@@ -31,6 +31,14 @@ exports.createOrder = async (req, res) => {
       });
     }
 
+    // Validate that both ID images are provided
+    if (!customerDetails.idFrontImage || !customerDetails.idBackImage) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Both front and back ID images are required' 
+      });
+    }
+
     if (!PRICING[plan]) {
       return res.status(400).json({ 
         success: false,
@@ -40,7 +48,12 @@ exports.createOrder = async (req, res) => {
 
     const orderData = {
       plan,
-      customerDetails,
+      customerDetails: {
+        ...customerDetails,
+        // Ensure both images are included
+        idFrontImage: customerDetails.idFrontImage,
+        idBackImage: customerDetails.idBackImage
+      },
       originalPrice: PRICING[plan],
       finalPrice: PRICING[plan],
       status: 'pending',
@@ -68,18 +81,18 @@ exports.createOrder = async (req, res) => {
     const order = await Order.create(orderData);
 
     // Send order confirmation email
-   try {
-  await EmailService.sendOrderConfirmation(order);
-  console.log('Order confirmation emails sent successfully');
-} catch (emailError) {
-  console.error('Email sending failed:', {
-    orderId: order._id,
-    error: emailError.message,
-    adminEmail: process.env.ADMIN_EMAIL,
-    contactRecipient: process.env.CONTACT_RECIPIENT
-  });
-  // Don't fail the order creation, but log the error
-}
+    try {
+      await EmailService.sendOrderConfirmation(order);
+      console.log('Order confirmation emails sent successfully');
+    } catch (emailError) {
+      console.error('Email sending failed:', {
+        orderId: order._id,
+        error: emailError.message,
+        adminEmail: process.env.ADMIN_EMAIL,
+        contactRecipient: process.env.CONTACT_RECIPIENT
+      });
+      // Don't fail the order creation, but log the error
+    }
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -221,7 +234,6 @@ exports.handleStripeWebhook = async (req, res) => {
 
   res.json({ received: true });
 };
-
 
 // Get all orders (admin)
 exports.getAllOrders = async (req, res) => {
@@ -377,13 +389,12 @@ exports.updateOrder = async (req, res) => {
 
     // Convert status to lowercase and validate
     const normalizedStatus = status.toLowerCase();
-   if (!['pending', 'processing', 'completed', 'failed', 'cancelled'].includes(normalizedStatus)) {
-  return res.status(400).json({
-    success: false,
-    message: 'Invalid status value'
-  });
-}
-
+    if (!['pending', 'processing', 'completed', 'failed', 'cancelled'].includes(normalizedStatus)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid status value'
+      });
+    }
 
     // Validate input
     if (normalizedStatus === 'completed' && (!paymentMethod || !transactionReference)) {

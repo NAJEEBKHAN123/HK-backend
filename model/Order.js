@@ -6,49 +6,61 @@ const orderSchema = new mongoose.Schema({
     required: true,
     enum: ['STARTER', 'SMART', 'PREMIUM']
   },
- customerDetails: {
-  fullName: {
-    type: String,
-    required: [true, 'Full name is required'],
-    trim: true
-  },
-  email: {
-    type: String,
-    required: [true, 'Email is required'],
-    trim: true,
-    lowercase: true,
-    match: [/^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/, 'Please fill a valid email address']
-  },
-  phone: {
-    type: String,
-    trim: true
-  },
-  address: {
-    type: String,
-    trim: true
-  },
-  birthday: {
-    type: Date,
-    validate: {
-      validator: function(value) {
-        // Validate that birthday is in the past
-        return value < new Date();
-      },
-      message: 'Birthday must be a date in the past'
+  customerDetails: {
+    fullName: {
+      type: String,
+      required: [true, 'Full name is required'],
+      trim: true
+    },
+    email: {
+      type: String,
+      required: [true, 'Email is required'],
+      trim: true,
+      lowercase: true,
+      match: [/^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/, 'Please fill a valid email address']
+    },
+    phone: {
+      type: String,
+      trim: true
+    },
+    address: {
+      type: String,
+      trim: true
+    },
+    birthday: {
+      type: Date,
+      validate: {
+        validator: function(value) {
+          // Validate that birthday is in the past
+          return value < new Date();
+        },
+        message: 'Birthday must be a date in the past'
+      }
+    },
+    // Replace single idImage with front and back images
+    idFrontImage: {
+      type: String,
+      required: [true, 'ID front image is required'],
+      validate: {
+        validator: function(value) {
+          // Validate URL format for the image
+          return /^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/.test(value);
+        },
+        message: 'Invalid front image URL format'
+      }
+    },
+    idBackImage: {
+      type: String,
+      required: [true, 'ID back image is required'],
+      validate: {
+        validator: function(value) {
+          // Validate URL format for the image
+          return /^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/.test(value);
+        },
+        message: 'Invalid back image URL format'
+      }
     }
   },
-  idImage: {
-    type: String,
-    required: [true, 'ID image is required'],
-    validate: {
-      validator: function(value) {
-        // Validate URL format for the image
-        return /^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/.test(value);
-      },
-      message: 'Invalid image URL format'
-    }
-  }
-},
   originalPrice: {
     type: Number,
     required: true
