@@ -22,7 +22,7 @@ const handleErrorResponse = (res, error, action) => {
 
 exports.createOrder = async (req, res) => {
   try {
-    const { plan, customerDetails, referralCode, clientId } = req.body;
+    const { plan, customerDetails, referralCode, clientId, referralSource = 'DIRECT' } = req.body;
 
     if (!plan || !customerDetails || !customerDetails.email) {
       return res.status(400).json({ 
@@ -46,11 +46,17 @@ exports.createOrder = async (req, res) => {
       });
     }
 
+    // Check if this is a returning client
+    const existingClientOrders = await Order.find({ 
+      'customerDetails.email': customerDetails.email.toLowerCase() 
+    });
+    
+    const clientStatus = existingClientOrders.length > 0 ? 'RETURNING' : 'NEW';
+
     const orderData = {
       plan,
       customerDetails: {
         ...customerDetails,
-        // Ensure both images are included
         idFrontImage: customerDetails.idFrontImage,
         idBackImage: customerDetails.idBackImage
       },
@@ -58,6 +64,8 @@ exports.createOrder = async (req, res) => {
       finalPrice: PRICING[plan],
       status: 'pending',
       source: 'DIRECT',
+      referralSource: referralSource,
+      clientStatus: clientStatus,
       client: clientId || null
     };
 
@@ -73,8 +81,14 @@ exports.createOrder = async (req, res) => {
         orderData.source = 'REFERRAL';
         orderData.referredBy = partner._id;
         orderData.referralCode = referralCode;
+        orderData.referralPartnerName = partner.name; // Store partner name for easy display
+        orderData.clientStatus = 'REFERRED';
         orderData.partnerCommission = Math.floor(PRICING[plan] * COMMISSION_RATE);
         orderData.finalPrice = PRICING[plan] - orderData.partnerCommission;
+        
+        console.log(`Order referred by partner: ${partner.name}, Commission: €${orderData.partnerCommission/100}`);
+      } else {
+        console.log(`Referral code ${referralCode} not found or partner inactive`);
       }
     }
 
@@ -114,7 +128,8 @@ exports.createOrder = async (req, res) => {
       metadata: {
         orderId: order._id.toString(),
         clientId: order.client?.toString() || '',
-        referralCode: order.referralCode || ''
+        referralCode: order.referralCode || '',
+        referralSource: order.referralSource || 'DIRECT'
       }
     });
 
@@ -128,15 +143,34 @@ exports.createOrder = async (req, res) => {
       );
     }
 
+    // Log order creation details
+    console.log(`Order created successfully:`, {
+      orderId: order._id,
+      plan: order.plan,
+      amount: order.originalPrice,
+      clientStatus: order.clientStatus,
+      source: order.source,
+      referredBy: order.referralPartnerName || 'N/A',
+      commission: order.partnerCommission
+    });
+
     res.json({
       success: true,
       url: session.url,
       orderId: order._id,
       amount: order.originalPrice,
-      currency: 'eur'
+      currency: 'eur',
+      clientStatus: order.clientStatus,
+      referralStatus: order.source === 'REFERRAL' ? 'referred' : 'direct'
     });
 
   } catch (error) {
+    console.error('Order creation error:', {
+      error: error.message,
+      plan: req.body.plan,
+      email: req.body.customerDetails?.email,
+      referralCode: req.body.referralCode
+    });
     handleErrorResponse(res, error, 'create order');
   }
 };
@@ -172,6 +206,8 @@ exports.handleStripeWebhook = async (req, res) => {
       ).populate('referredBy');
 
       if (order) {
+        console.log(`Order ${order._id} marked as completed via webhook`);
+        
         try {
           await EmailService.sendPaymentSuccess(order);
         } catch (emailError) {
@@ -221,6 +257,8 @@ exports.handleStripeWebhook = async (req, res) => {
 
           order.isCommissionProcessed = true;
           await order.save();
+          
+          console.log(`Commission processed for partner ${order.referredBy.name}: €${order.partnerCommission/100}`);
         } catch (transferErr) {
           console.error('Commission processing failed:', transferErr);
           order.isCommissionProcessed = true;
@@ -238,17 +276,34 @@ exports.handleStripeWebhook = async (req, res) => {
 // Get all orders (admin)
 exports.getAllOrders = async (req, res) => {
   try {
-    const { page = 1, limit = 10, search = '' } = req.query;
+    const { page = 1, limit = 10, search = '', clientType, source } = req.query;
     const skip = (page - 1) * limit;
 
     const query = {};
+    
+    // Search filter
     if (search) {
       query.$or = [
         { 'customerDetails.fullName': { $regex: search, $options: 'i' } },
         { 'customerDetails.email': { $regex: search, $options: 'i' } },
         { plan: { $regex: search, $options: 'i' } },
-        { status: { $regex: search, $options: 'i' } }
+        { status: { $regex: search, $options: 'i' } },
+        { referralPartnerName: { $regex: search, $options: 'i' } }
       ];
+    }
+    
+    // Client type filter
+    if (clientType && clientType !== 'ALL') {
+      if (clientType === 'REFERRED') {
+        query.source = 'REFERRAL';
+      } else {
+        query.clientStatus = clientType;
+      }
+    }
+    
+    // Source filter
+    if (source && source !== 'ALL') {
+      query.referralSource = source;
     }
 
     const orders = await Order.find(query)
@@ -472,5 +527,46 @@ exports.updateOrder = async (req, res) => {
       message: 'Failed to update order',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
+  }
+};
+
+// Get order statistics
+exports.getOrderStats = async (req, res) => {
+  try {
+    const totalOrders = await Order.countDocuments();
+    const completedOrders = await Order.countDocuments({ status: 'completed' });
+    const referralOrders = await Order.countDocuments({ source: 'REFERRAL' });
+    const totalRevenue = await Order.aggregate([
+      { $match: { status: 'completed' } },
+      { $group: { _id: null, total: { $sum: '$finalPrice' } } }
+    ]);
+    
+    const clientTypeStats = await Order.aggregate([
+      {
+        $group: {
+          _id: {
+            $cond: [
+              { $eq: ['$source', 'REFERRAL'] },
+              'REFERRED',
+              '$clientStatus'
+            ]
+          },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        totalOrders,
+        completedOrders,
+        referralOrders,
+        totalRevenue: totalRevenue[0]?.total || 0,
+        clientTypeStats
+      }
+    });
+  } catch (error) {
+    handleErrorResponse(res, error, 'fetch order statistics');
   }
 };

@@ -31,19 +31,16 @@ const orderSchema = new mongoose.Schema({
       type: Date,
       validate: {
         validator: function(value) {
-          // Validate that birthday is in the past
           return value < new Date();
         },
         message: 'Birthday must be a date in the past'
       }
     },
-    // Replace single idImage with front and back images
     idFrontImage: {
       type: String,
       required: [true, 'ID front image is required'],
       validate: {
         validator: function(value) {
-          // Validate URL format for the image
           return /^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/.test(value);
         },
         message: 'Invalid front image URL format'
@@ -54,7 +51,6 @@ const orderSchema = new mongoose.Schema({
       required: [true, 'ID back image is required'],
       validate: {
         validator: function(value) {
-          // Validate URL format for the image
           return /^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/.test(value);
         },
         message: 'Invalid back image URL format'
@@ -88,6 +84,18 @@ const orderSchema = new mongoose.Schema({
     ref: 'Partner'
   },
   referralCode: String,
+  // New fields for enhanced tracking
+  referralSource: {
+    type: String,
+    enum: ['DIRECT', 'PARTNER_REFERRAL', 'AFFILIATE', 'SOCIAL_MEDIA', 'OTHER'],
+    default: 'DIRECT'
+  },
+  referralPartnerName: String,
+  clientStatus: {
+    type: String,
+    enum: ['NEW', 'RETURNING', 'REFERRED'],
+    default: 'NEW'
+  },
   client: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Client'
@@ -109,9 +117,7 @@ const orderSchema = new mongoose.Schema({
   toJSON: { 
     virtuals: true,
     transform: function(doc, ret) {
-      delete ret.partnerCommission;
-      delete ret.referredBy;
-      delete ret.referralCode;
+      // Keep referral fields for display
       delete ret.stripeSessionId;
       delete ret.paymentIntentId;
       delete ret.isCommissionProcessed;
@@ -119,6 +125,21 @@ const orderSchema = new mongoose.Schema({
       return ret;
     }
   }
+});
+
+// Virtual for displaying referral status
+orderSchema.virtual('referralStatus').get(function() {
+  if (this.source === 'REFERRAL' && this.referredBy) {
+    return `Referred by ${this.referralPartnerName || 'Partner'}`;
+  }
+  return 'Direct Client';
+});
+
+// Virtual for client status display
+orderSchema.virtual('clientStatusDisplay').get(function() {
+  if (this.source === 'REFERRAL') return 'Referred';
+  if (this.clientStatus === 'RETURNING') return 'Returning';
+  return 'New Client';
 });
 
 // Calculate final price and commission
@@ -141,7 +162,7 @@ orderSchema.post('save', async function(doc) {
     session.startTransaction();
     
     try {
-      const partner = await Partner.findById(doc.referredBy).session(session);
+      const partner = await mongoose.model('Partner').findById(doc.referredBy).session(session);
       if (partner) {
         // Update partner stats
         partner.ordersReferred.push(doc._id);
