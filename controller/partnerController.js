@@ -649,7 +649,7 @@ exports.updatePartnerStatus = async (req, res) => {
   }
 };
 
-// Admin-initiated payout
+// In partnerController.js, update adminProcessPayout function
 exports.adminProcessPayout = async (req, res) => {
   try {
     const { amount, notes } = req.body;
@@ -662,38 +662,49 @@ exports.adminProcessPayout = async (req, res) => {
       });
     }
 
-    const availableCommission = (partner.commissionEarned || 0) - (partner.commissionPaid || 0);
+    // Convert Euros to cents for database
+    const amountInCents = Math.round(amount * 100);
+    const availableCommissionInCents = (partner.commissionEarned || 0) - (partner.commissionPaid || 0);
     
-    if (amount > availableCommission) {
+    if (amountInCents > availableCommissionInCents) {
       return res.status(400).json({
         success: false,
         error: 'Payout amount exceeds available commission'
       });
     }
 
-    // Update partner commission
-    partner.commissionPaid += amount;
+    // Update partner commission (in cents)
+    partner.commissionPaid += amountInCents;
     await partner.save();
 
-    // Create payout record (you'll need a Payout model)
+    // Create payout record
     const payout = await Payout.create({
       partner: partner._id,
-      amount,
+      amount: amountInCents, // Store in cents
       notes,
       processedBy: req.admin.id,
       status: 'completed'
     });
 
+    // Send email notification
     await sendEmail({
       to: partner.email,
       subject: `Payout Processed by Admin`,
-      html: `An admin has processed a payout of $${(amount / 100).toFixed(2)} for your account.`
+      html: `An admin has processed a payout of €${amount.toFixed(2)} for your account.`
     });
 
     res.json({
       success: true,
-      payout,
-      partner
+      payout: {
+        ...payout.toObject(),
+        amount: amount // Return in Euros for frontend
+      },
+      partner: {
+        ...partner.toObject(),
+        commissionEarned: partner.commissionEarned / 100, // Convert to Euros
+        commissionPaid: partner.commissionPaid / 100, // Convert to Euros
+        availableCommission: (partner.commissionEarned - partner.commissionPaid) / 100 // Convert to Euros
+      }
     });
   } catch (error) {
     res.status(500).json({
