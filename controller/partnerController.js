@@ -485,6 +485,7 @@ exports.verifyPartners = async (req, res) => {
 
 // Get partner dashboard data
 // In the getPartnerDashboard function, update the response:
+// Get partner dashboard data
 exports.getPartnerDashboard = async (req, res) => {
   try {
     if (!req.partner?.id) {
@@ -518,10 +519,11 @@ exports.getPartnerDashboard = async (req, res) => {
       ? (((partner.totalClientsReferred || 0) / partner.referralClicks) * 100).toFixed(2)
       : '0.00';
 
-    // IMPORTANT: Convert cents to euros for frontend
-    const commissionEarned = (partner.commissionEarned || 0) / 100; // Convert cents to euros
-    const commissionPaid = (partner.commissionPaid || 0) / 100; // Convert cents to euros
+    // ========== FIX: MULTIPLY BY 100 ==========
+    const commissionEarned = (partner.commissionEarned || 0) * 100; // 13.80 → 1380
+    const commissionPaid = (partner.commissionPaid || 0) * 100; // 0 → 0
     const availableCommission = commissionEarned - commissionPaid;
+    const totalReferralSales = (partner.totalReferralSales || 0) * 100;
     
     // Generate proper tracking link
     const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
@@ -539,14 +541,15 @@ exports.getPartnerDashboard = async (req, res) => {
           referralCode: partner.referralCode,
           referralLink: referralLink,
           status: partner.status,
-          commissionEarned: commissionEarned, // Already in euros
-          commissionPaid: commissionPaid, // Already in euros
-          availableCommission: availableCommission, // Already in euros
+          commissionEarned: commissionEarned, // Now 1380 not 13.80
+          commissionPaid: commissionPaid, // Now 0 not 0
+          availableCommission: availableCommission, // Now 1380 not 13.80
           totalClientsReferred: partner.totalClientsReferred || 0,
           totalOrdersReferred: partner.totalOrdersReferred || 0,
           referralClicks: partner.referralClicks || 0,
           conversionRate: conversionRate,
-          totalReferralSales: (partner.totalReferralSales || 0) / 100 // Convert to euros
+          totalReferralSales: totalReferralSales,
+          commissionRate: partner.commissionRate || 10
         },
         clients: partner.clientsReferred || [],
         orders: partner.ordersReferred || []
@@ -562,6 +565,7 @@ exports.getPartnerDashboard = async (req, res) => {
     });
   }
 };
+
 
 // Also update getAdminPartnerDetails function:
 exports.getAdminPartnerDetails = async (req, res) => {
@@ -593,10 +597,11 @@ exports.getAdminPartnerDetails = async (req, res) => {
       ? parseFloat(((partner.totalClientsReferred / partner.referralClicks) * 100).toFixed(2))
       : 0;
 
-    // Convert cents to euros
-    const commissionEarned = (partner.commissionEarned || 0) / 100;
-    const commissionPaid = (partner.commissionPaid || 0) / 100;
+    // ========== FIX: MULTIPLY BY 100 ==========
+    const commissionEarned = (partner.commissionEarned || 0) * 100;
+    const commissionPaid = (partner.commissionPaid || 0) * 100;
     const availableCommission = commissionEarned - commissionPaid;
+    const totalReferralSales = (partner.totalReferralSales || 0) * 100;
     
     // Generate proper tracking link
     const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
@@ -614,14 +619,15 @@ exports.getAdminPartnerDetails = async (req, res) => {
           referralCode: partner.referralCode,
           referralLink: referralLink,
           status: partner.status,
-          commissionEarned: commissionEarned, // In euros
-          commissionPaid: commissionPaid, // In euros
-          availableCommission: availableCommission, // In euros
+          commissionEarned: commissionEarned, // 1380 not 13.80
+          commissionPaid: commissionPaid, // 0 not 0
+          availableCommission: availableCommission, // 1380 not 13.80
           totalClientsReferred: partner.totalClientsReferred || 0,
           totalOrdersReferred: partner.totalOrdersReferred || 0,
           referralClicks: partner.referralClicks || 0,
           conversionRate: conversionRate,
-          totalReferralSales: (partner.totalReferralSales || 0) / 100, // In euros
+          totalReferralSales: totalReferralSales,
+          commissionRate: partner.commissionRate || 10,
           createdAt: partner.createdAt,
           referredBy: partner.referredBy
         },
@@ -729,81 +735,81 @@ exports.getAllPartners = async (req, res) => {
 };
 
 // Get detailed partner info for admin
-exports.getAdminPartnerDetails = async (req, res) => {
-  try {
-    if (!req.admin?.id) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized - Admin access required'
-      });
-    }
+// exports.getAdminPartnerDetails = async (req, res) => {
+//   try {
+//     if (!req.admin?.id) {
+//       return res.status(401).json({
+//         success: false,
+//         error: 'Unauthorized - Admin access required'
+//       });
+//     }
 
-    const partner = await Partner.findById(req.params.id)
-      .populate('clientsReferred', 'name email createdAt source orders')
-      .populate({
-        path: 'ordersReferred',
-        select: 'plan finalPrice originalPrice createdAt status customerDetails.email partnerCommission',
-        options: { sort: { createdAt: -1 } }
-      });
+//     const partner = await Partner.findById(req.params.id)
+//       .populate('clientsReferred', 'name email createdAt source orders')
+//       .populate({
+//         path: 'ordersReferred',
+//         select: 'plan finalPrice originalPrice createdAt status customerDetails.email partnerCommission',
+//         options: { sort: { createdAt: -1 } }
+//       });
 
-    if (!partner) {
-      return res.status(404).json({
-        success: false,
-        error: 'Partner not found'
-      });
-    }
+//     if (!partner) {
+//       return res.status(404).json({
+//         success: false,
+//         error: 'Partner not found'
+//       });
+//     }
 
-    // Calculate conversion rate
-    const conversionRate = (partner.referralClicks || 0) > 0 
-      ? parseFloat(((partner.totalClientsReferred || 0) / (partner.referralClicks || 1) * 100).toFixed(2))
-      : 0;
+//     // Calculate conversion rate
+//     const conversionRate = (partner.referralClicks || 0) > 0 
+//       ? parseFloat(((partner.totalClientsReferred || 0) / (partner.referralClicks || 1) * 100).toFixed(2))
+//       : 0;
 
-    // Ensure commission values are in cents
-    const commissionEarned = Math.floor(partner.commissionEarned || 0);
-    const commissionPaid = Math.floor(partner.commissionPaid || 0);
-    const availableCommission = commissionEarned - commissionPaid;
+//     // Ensure commission values are in cents
+//     const commissionEarned = Math.floor(partner.commissionEarned || 0);
+//     const commissionPaid = Math.floor(partner.commissionPaid || 0);
+//     const availableCommission = commissionEarned - commissionPaid;
     
-    // Generate proper tracking link
-    const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    const referralLink = partner.referralLink || 
-      `${backendUrl}/api/partner-auth/verify-referral?code=${partner.referralCode}&redirect=${encodeURIComponent(frontendUrl + '/signup')}`;
+//     // Generate proper tracking link
+//     const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
+//     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+//     const referralLink = partner.referralLink || 
+//       `${backendUrl}/api/partner-auth/verify-referral?code=${partner.referralCode}&redirect=${encodeURIComponent(frontendUrl + '/signup')}`;
 
-    res.json({
-      success: true,
-      data: {
-        partner: {
-          id: partner._id,
-          name: partner.name,
-          email: partner.email,
-          referralCode: partner.referralCode,
-          referralLink: referralLink,
-          status: partner.status,
-          commissionEarned: commissionEarned,
-          commissionPaid: commissionPaid,
-          availableCommission: availableCommission,
-          totalClientsReferred: partner.totalClientsReferred || 0,
-          totalOrdersReferred: partner.totalOrdersReferred || 0,
-          referralClicks: partner.referralClicks || 0,
-          conversionRate: conversionRate,
-          totalReferralSales: partner.totalReferralSales || 0,
-          createdAt: partner.createdAt,
-          referredBy: partner.referredBy
-        },
-        clients: partner.clientsReferred || [],
-        orders: partner.ordersReferred || []
-      }
-    });
+//     res.json({
+//       success: true,
+//       data: {
+//         partner: {
+//           id: partner._id,
+//           name: partner.name,
+//           email: partner.email,
+//           referralCode: partner.referralCode,
+//           referralLink: referralLink,
+//           status: partner.status,
+//           commissionEarned: commissionEarned,
+//           commissionPaid: commissionPaid,
+//           availableCommission: availableCommission,
+//           totalClientsReferred: partner.totalClientsReferred || 0,
+//           totalOrdersReferred: partner.totalOrdersReferred || 0,
+//           referralClicks: partner.referralClicks || 0,
+//           conversionRate: conversionRate,
+//           totalReferralSales: partner.totalReferralSales || 0,
+//           createdAt: partner.createdAt,
+//           referredBy: partner.referredBy
+//         },
+//         clients: partner.clientsReferred || [],
+//         orders: partner.ordersReferred || []
+//       }
+//     });
 
-  } catch (error) {
-    console.error('Partner detail error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch partner details',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-};
+//   } catch (error) {
+//     console.error('Partner detail error:', error);
+//     res.status(500).json({
+//       success: false,
+//       error: 'Failed to fetch partner details',
+//       details: process.env.NODE_ENV === 'development' ? error.message : undefined
+//     });
+//   }
+// };
 
 // Get partner statistics for admin dashboard
 exports.getPartnerStats = async (req, res) => {
