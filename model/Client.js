@@ -22,6 +22,10 @@ const clientSchema = new mongoose.Schema({
     minlength: [8, 'Password must be at least 8 characters'],
     select: false
   },
+  phone: {
+    type: String,
+    default: ''
+  },
   referredBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Partner'
@@ -32,11 +36,14 @@ const clientSchema = new mongoose.Schema({
     default: 'DIRECT'
   },
   referralCode: String,
-
-  orders: {
+  orders: [{  // CHANGED TO ARRAY FOR MULTIPLE ORDERS
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Order',
-    default: null
+    ref: 'Order'
+  }],
+  status: {
+    type: String,
+    enum: ['active', 'inactive', 'pending'],
+    default: 'active'
   }
 }, {
   timestamps: true,

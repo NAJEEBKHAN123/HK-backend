@@ -3,6 +3,7 @@ const Partner = require('../model/Partner');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const Order = require('../model/Order');
 const EmailService = require('../services/emailService');
+const crypto = require('crypto'); // ADD THIS
 
 const PRICING = {
   STARTER: 3900,
@@ -20,22 +21,29 @@ const handleErrorResponse = (res, error, action) => {
   });
 };
 
+// ============ UPDATED CREATE ORDER FUNCTION ============
 exports.createOrder = async (req, res) => {
   try {
-    const { plan, customerDetails, referralCode, clientId, referralSource = 'DIRECT' } = req.body;
+    console.log('🔍 Order creation started:', {
+      body: req.body,
+      referralCode: req.body.referralCode,
+      email: req.body.customerDetails?.email
+    });
 
-    if (!plan || !customerDetails || !customerDetails.email) {
+    const { plan, customerDetails, referralCode, referralSource = 'DIRECT' } = req.body;
+
+    // Validation
+    if (!plan || !customerDetails || !customerDetails.email || !customerDetails.fullName) {
       return res.status(400).json({ 
         success: false,
-        message: 'Missing required fields' 
+        message: 'Missing required fields: plan, email, fullName' 
       });
     }
 
-    // Validate that both ID images are provided
     if (!customerDetails.idFrontImage || !customerDetails.idBackImage) {
       return res.status(400).json({ 
         success: false,
-        message: 'Both front and back ID images are required' 
+        message: 'Both ID images are required' 
       });
     }
 
@@ -46,13 +54,90 @@ exports.createOrder = async (req, res) => {
       });
     }
 
-    // Check if this is a returning client
-    const existingClientOrders = await Order.find({ 
-      'customerDetails.email': customerDetails.email.toLowerCase() 
+    // ================== 1. FIND OR CREATE CLIENT ==================
+    const clientEmail = customerDetails.email.toLowerCase();
+    let client = await Client.findOne({ email: clientEmail });
+    let partner = null;
+    let isNewClient = false;
+
+    if (!client) {
+      console.log('👤 Client not found, creating new client...');
+      
+      // Generate temporary password
+      const tempPassword = crypto.randomBytes(8).toString('hex');
+      
+      client = await Client.create({
+        name: customerDetails.fullName,
+        email: clientEmail,
+        password: tempPassword,
+        phone: customerDetails.phone || '',
+        source: 'DIRECT', // Will update if referral
+        orders: [],
+        status: 'active'
+      });
+      
+      isNewClient = true;
+      console.log(`✅ New client created: ${client.email} (ID: ${client._id})`);
+    } else {
+      console.log(`✅ Existing client found: ${client.email} (ID: ${client._id})`);
+    }
+
+    // ================== 2. HANDLE REFERRAL CODE ==================
+    if (referralCode && referralCode.trim()) {
+      console.log(`🔍 Looking for partner with referral code: "${referralCode.trim()}"`);
+      
+      partner = await Partner.findOne({ 
+        referralCode: referralCode.trim(),
+        status: 'active'
+      });
+
+      if (partner) {
+        console.log(`✅ Found partner: ${partner.name} (ID: ${partner._id})`);
+        
+        // ========== FIX: UPDATE CLIENT REFERRAL INFO ==========
+        // Only update if client is not already linked to a partner
+        if (!client.referredBy || client.referredBy.toString() !== partner._id.toString()) {
+          console.log(`🔗 Linking client to partner...`);
+          
+          client.source = 'REFERRAL';
+          client.referredBy = partner._id;
+          client.referralCode = referralCode.trim();
+          await client.save();
+          
+          console.log(`✅ Client updated with referral info`);
+          
+          // ========== FIX: ADD CLIENT TO PARTNER'S REFERRED CLIENTS ==========
+          // Check if client already in partner's list
+          const partnerDoc = await Partner.findById(partner._id);
+          const isClientAlreadyInList = partnerDoc.clientsReferred.some(
+            clientId => clientId.toString() === client._id.toString()
+          );
+          
+          if (!isClientAlreadyInList) {
+            await Partner.findByIdAndUpdate(partner._id, {
+              $addToSet: { clientsReferred: client._id },
+              $inc: { totalClientsReferred: 1 }
+            });
+            console.log(`✅ Client added to partner's clientsReferred list`);
+          } else {
+            console.log(`ℹ️ Client already in partner's referred list`);
+          }
+        } else {
+          console.log(`ℹ️ Client already linked to this partner`);
+        }
+      } else {
+        console.log(`❌ No active partner found for referral code: "${referralCode.trim()}"`);
+      }
+    }
+
+    // ================== 3. CHECK CLIENT STATUS ==================
+    const existingOrders = await Order.find({ 
+      'customerDetails.email': clientEmail 
     });
     
-    const clientStatus = existingClientOrders.length > 0 ? 'RETURNING' : 'NEW';
+    const clientStatus = existingOrders.length > 0 ? 'RETURNING' : 'NEW';
 
+    // ================== 4. CREATE ORDER DATA ==================
     const orderData = {
       plan,
       customerDetails: {
@@ -63,51 +148,58 @@ exports.createOrder = async (req, res) => {
       originalPrice: PRICING[plan],
       finalPrice: PRICING[plan],
       status: 'pending',
-      source: 'DIRECT',
+      source: 'DIRECT', // Default
       referralSource: referralSource,
       clientStatus: clientStatus,
-      client: clientId || null
+      client: client._id, // LINK ORDER TO CLIENT
+      isNewClient: isNewClient
     };
 
-    let partner = null;
-
-    if (referralCode) {
-      partner = await Partner.findOne({ 
-        referralCode,
-        status: 'active'
-      });
-
-      if (partner) {
-        orderData.source = 'REFERRAL';
-        orderData.referredBy = partner._id;
-        orderData.referralCode = referralCode;
-        orderData.referralPartnerName = partner.name; // Store partner name for easy display
-        orderData.clientStatus = 'REFERRED';
-        orderData.partnerCommission = Math.floor(PRICING[plan] * COMMISSION_RATE);
-        orderData.finalPrice = PRICING[plan] - orderData.partnerCommission;
-        
-        console.log(`Order referred by partner: ${partner.name}, Commission: €${orderData.partnerCommission/100}`);
-      } else {
-        console.log(`Referral code ${referralCode} not found or partner inactive`);
-      }
+    // Add referral info if partner exists
+    if (partner) {
+      orderData.source = 'REFERRAL';
+      orderData.referredBy = partner._id;
+      orderData.referralCode = referralCode.trim();
+      orderData.referralPartnerName = partner.name;
+      orderData.clientStatus = 'REFERRED';
+      orderData.partnerCommission = Math.floor(PRICING[plan] * COMMISSION_RATE);
+      orderData.finalPrice = PRICING[plan] - orderData.partnerCommission;
+      
+      console.log(`💰 Commission calculated: €${orderData.partnerCommission/100} for partner ${partner.name}`);
     }
 
+    // ================== 5. CREATE ORDER ==================
     const order = await Order.create(orderData);
+    console.log(`✅ Order created: ${order._id}`);
 
-    // Send order confirmation email
+    // ================== 6. UPDATE CLIENT WITH ORDER ==================
+    await Client.findByIdAndUpdate(client._id, {
+      $push: { orders: order._id }
+    });
+    console.log(`✅ Order ${order._id} linked to client ${client.email}`);
+
+    // ================== 7. UPDATE PARTNER WITH ORDER ==================
+    if (partner) {
+      await Partner.findByIdAndUpdate(partner._id, {
+        $addToSet: { ordersReferred: order._id },
+        $inc: { 
+          totalOrdersReferred: 1,
+          totalReferralSales: order.originalPrice,
+          commissionEarned: order.partnerCommission
+        }
+      });
+      console.log(`✅ Order ${order._id} added to partner ${partner.name}'s ordersReferred`);
+    }
+
+    // ================== 8. SEND EMAILS ==================
     try {
       await EmailService.sendOrderConfirmation(order);
-      console.log('Order confirmation emails sent successfully');
+      console.log('📧 Order confirmation email sent');
     } catch (emailError) {
-      console.error('Email sending failed:', {
-        orderId: order._id,
-        error: emailError.message,
-        adminEmail: process.env.ADMIN_EMAIL,
-        contactRecipient: process.env.CONTACT_RECIPIENT
-      });
-      // Don't fail the order creation, but log the error
+      console.error('❌ Email sending failed:', emailError.message);
     }
 
+    // ================== 9. CREATE STRIPE SESSION ==================
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
@@ -127,7 +219,7 @@ exports.createOrder = async (req, res) => {
       customer_email: order.customerDetails.email,
       metadata: {
         orderId: order._id.toString(),
-        clientId: order.client?.toString() || '',
+        clientId: client._id.toString(),
         referralCode: order.referralCode || '',
         referralSource: order.referralSource || 'DIRECT'
       }
@@ -136,42 +228,91 @@ exports.createOrder = async (req, res) => {
     order.stripeSessionId = session.id;
     await order.save();
 
-    if (partner && clientId) {
-      await Partner.findByIdAndUpdate(
-        partner._id,
-        { $inc: { totalOrdersReferred: 1 } }
-      );
-    }
-
-    // Log order creation details
-    console.log(`Order created successfully:`, {
+    // ================== 10. LOG SUCCESS ==================
+    console.log('🎉 Order creation completed:', {
       orderId: order._id,
-      plan: order.plan,
-      amount: order.originalPrice,
-      clientStatus: order.clientStatus,
-      source: order.source,
-      referredBy: order.referralPartnerName || 'N/A',
-      commission: order.partnerCommission
+      clientId: client._id,
+      clientEmail: client.email,
+      isNewClient: isNewClient,
+      partner: partner ? partner.name : 'None',
+      commission: order.partnerCommission || 0,
+      clientInPartnerList: partner ? 'Yes' : 'No'
     });
 
+    // ================== 11. RETURN RESPONSE ==================
     res.json({
       success: true,
       url: session.url,
       orderId: order._id,
+      clientId: client._id,
       amount: order.originalPrice,
       currency: 'eur',
       clientStatus: order.clientStatus,
-      referralStatus: order.source === 'REFERRAL' ? 'referred' : 'direct'
+      referralStatus: order.source === 'REFERRAL' ? 'referred' : 'direct',
+      message: partner 
+        ? `Client ${client.email} linked to partner ${partner.name}` 
+        : `Client ${client.email} created successfully`
     });
 
   } catch (error) {
-    console.error('Order creation error:', {
+    console.error('❌ CRITICAL Order creation error:', {
       error: error.message,
-      plan: req.body.plan,
-      email: req.body.customerDetails?.email,
-      referralCode: req.body.referralCode
+      stack: error.stack,
+      body: req.body
     });
     handleErrorResponse(res, error, 'create order');
+  }
+};
+
+// ============ ADD TEST ENDPOINT ============
+exports.testClientLink = async (req, res) => {
+  try {
+    const { email } = req.query;
+    
+    const client = await Client.findOne({ email: email.toLowerCase() })
+      .populate('referredBy', 'name email referralCode')
+      .populate('orders', 'plan createdAt status');
+    
+    if (!client) {
+      return res.json({
+        exists: false,
+        message: 'Client not found'
+      });
+    }
+
+    // Find partners who have this client in their referred list
+    const partners = await Partner.find({ 
+      clientsReferred: client._id 
+    }).select('name email referralCode totalClientsReferred');
+    
+    // Find orders for this client
+    const orders = await Order.find({ 
+      'customerDetails.email': email.toLowerCase() 
+    }).select('plan createdAt status referredBy');
+
+    res.json({
+      client: {
+        id: client._id,
+        name: client.name,
+        email: client.email,
+        source: client.source,
+        referredBy: client.referredBy,
+        referralCode: client.referralCode,
+        orders: client.orders,
+        createdAt: client.createdAt
+      },
+      linkedToPartners: partners,
+      allOrders: orders,
+      summary: {
+        clientExists: true,
+        isReferred: !!client.referredBy,
+        totalOrders: orders.length,
+        linkedPartnersCount: partners.length,
+        clientInPartnerList: partners.length > 0 ? 'YES' : 'NO'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 };
 
