@@ -1,79 +1,94 @@
+// middleware/authMiddleware.js - SIMPLIFIED VERSION
 const jwt = require('jsonwebtoken');
-const Client = require('../model/Client');
 const Partner = require('../model/Partner');
-const Admin = require('../model/adminModel');
 
-// Unified token extraction function
-const extractToken = (req) => {
-  // Check Authorization header first
-  if (req.headers.authorization?.startsWith('Bearer')) {
-    return req.headers.authorization.split(' ')[1];
-  }
-  
-  // Then check cookies
-  if (req.cookies?.token) {
-    return req.cookies.token;
-  }
-  
-  // Finally check query parameters (for special cases)
-  if (req.query?.token) {
-    return req.query.token;
-  }
-  
-  return null;
-};
-
-// Base protection middleware
-const protect = async (req, res, next) => {
+// Simple protect middleware for partners
+exports.protect = async (req, res, next) => {
   try {
-    const token = extractToken(req);
+    console.log('🔐 Auth middleware called for:', req.originalUrl);
+    
+    let token;
+    
+    // Get token from header
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      token = req.headers.authorization.split(' ')[1];
+      console.log('✅ Token found in Authorization header');
+    } 
+    // Get token from cookies
+    else if (req.cookies?.token) {
+      token = req.cookies.token;
+      console.log('✅ Token found in cookies');
+    }
     
     if (!token) {
+      console.log('❌ No token provided');
       return res.status(401).json({
         success: false,
-        error: 'Authentication required - No token provided'
+        error: 'Not authorized to access this route'
       });
     }
-
+    
+    console.log('🔍 Verifying token...');
+    
+    // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
-    // Standardize user attachment
-    req.user = {
+    console.log('✅ Token decoded:', {
       id: decoded.id,
-      role: decoded.role
-    };
+      role: decoded.role,
+      email: decoded.email || 'No email'
+    });
     
-    // Attach specific user document based on role
-    let userModel;
-    switch(decoded.role) {
-      case 'client':
-        userModel = await Client.findById(decoded.id);
-        req.client = userModel;
-        break;
-      case 'partner':
-        userModel = await Partner.findById(decoded.id);
-        req.partner = userModel;
-        break;
-      case 'admin':
-        userModel = await Admin.findById(decoded.id);
-        req.admin = userModel;
-        break;
-      default:
-        throw new Error('Unknown user role');
-    }
-
-    if (!userModel) {
-      return res.status(404).json({
+    // IMPORTANT: Check role first
+    if (decoded.role !== 'partner') {
+      console.log('❌ Not a partner token, role:', decoded.role);
+      return res.status(403).json({
         success: false,
-        error: 'User account not found'
+        error: 'Access denied. Partner account required'
       });
     }
     
-    next();
-  } catch (err) {
-    console.error('Authentication error:', err.message);
+    // Find the partner
+    console.log('👤 Finding partner with ID:', decoded.id);
+    const partner = await Partner.findById(decoded.id);
     
-    let errorMessage = 'Authentication failed';
+    if (!partner) {
+      console.log('❌ Partner not found in database');
+      return res.status(401).json({
+        success: false,
+        error: 'Partner not found'
+      });
+    }
+    
+    // Check if partner is active
+    if (partner.status !== 'active') {
+      console.log('❌ Partner account is not active:', partner.status);
+      return res.status(401).json({
+        success: false,
+        error: 'Account is not active'
+      });
+    }
+    
+    console.log('✅ Partner authenticated:', {
+      id: partner._id,
+      name: partner.name,
+      email: partner.email
+    });
+    
+    // Attach partner to request
+    req.partner = partner;
+    req.user = { id: partner._id, role: 'partner' };
+    
+    next();
+    
+  } catch (err) {
+    console.error('❌ Auth middleware error:', {
+      name: err.name,
+      message: err.message,
+      expiredAt: err.expiredAt
+    });
+    
+    let errorMessage = 'Not authorized to access this route';
     if (err.name === 'JsonWebTokenError') {
       errorMessage = 'Invalid token';
     } else if (err.name === 'TokenExpiredError') {
@@ -88,68 +103,64 @@ const protect = async (req, res, next) => {
   }
 };
 
-// Role verification middlewares
-const verifyAdmin = (req, res, next) => {
-  const token = req.headers.authorization?.split(" ")[1]; // Bearer <token>
-
-  if (!token) {
-    return res.status(401).json({ message: "Access denied. No token provided." });
-  }
-
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (decoded.role !== "admin") {
-      return res.status(403).json({ message: "Access denied. Not an admin." });
-    }
-
-    req.admin = decoded; // attach admin to request
-    next();
-  } catch (err) {
-    res.status(400).json({ message: "Invalid token." });
-  }
-};
-
-const verifyPartner = (req, res, next) => {
-  // First ensure protect middleware ran
-  if (!req.user) {
+// Simple verifyPartner middleware (just checks if partner exists)
+exports.verifyPartner = (req, res, next) => {
+  console.log('🔍 verifyPartner middleware: Checking partner access...');
+  
+  if (!req.partner) {
+    console.log('❌ No partner in request');
     return res.status(401).json({
       success: false,
-      error: 'Authentication required'
+      error: 'Not authenticated as partner'
     });
   }
-
-  // Then verify partner role
-  if (req.user.role !== 'partner') {
-    return res.status(403).json({
-      success: false,
-      error: 'Access denied. Partner account required'
-    });
-  }
-
-  // Ensure partner document exists
-  if (!req.partner) {
-    return res.status(403).json({
-      success: false,
-      error: 'Partner account not found'
-    });
-  }
-
+  
+  console.log('✅ Partner access granted:', req.partner.email);
   next();
 };
 
-const requireClient = (req, res, next) => {
-  if (!req.client) {
-    return res.status(403).json({
+// Admin middleware
+exports.verifyAdmin = async (req, res, next) => {
+  try {
+    let token;
+    
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      token = req.headers.authorization.split(' ')[1];
+    }
+    
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        error: 'Admin access required - No token provided'
+      });
+    }
+    
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    if (decoded.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied. Admin account required'
+      });
+    }
+    
+    // Find admin (if you have Admin model)
+    // const admin = await Admin.findById(decoded.id);
+    // if (!admin) {
+    //   return res.status(401).json({
+    //     success: false,
+    //     error: 'Admin not found'
+    //   });
+    // }
+    
+    req.admin = { id: decoded.id };
+    req.user = { id: decoded.id, role: 'admin' };
+    
+    next();
+  } catch (error) {
+    return res.status(401).json({
       success: false,
-      error: 'Access denied. Client account required'
+      error: 'Admin authentication failed'
     });
   }
-  next();
-};
-
-module.exports = {
-  protect,        // General authentication check
-  verifyAdmin,    // Requires admin role
-  verifyPartner,  // Requires partner role
-  requireClient,  // Requires client role
 };
