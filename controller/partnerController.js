@@ -484,6 +484,7 @@ exports.verifyPartners = async (req, res) => {
 // ========== DASHBOARD FUNCTIONS ==========
 
 // Get partner dashboard data
+// In the getPartnerDashboard function, update the response:
 exports.getPartnerDashboard = async (req, res) => {
   try {
     if (!req.partner?.id) {
@@ -512,6 +513,22 @@ exports.getPartnerDashboard = async (req, res) => {
       });
     }
 
+    // Calculate conversion rate
+    const conversionRate = (partner.referralClicks || 0) > 0 
+      ? (((partner.totalClientsReferred || 0) / partner.referralClicks) * 100).toFixed(2)
+      : '0.00';
+
+    // IMPORTANT: Convert cents to euros for frontend
+    const commissionEarned = (partner.commissionEarned || 0) / 100; // Convert cents to euros
+    const commissionPaid = (partner.commissionPaid || 0) / 100; // Convert cents to euros
+    const availableCommission = commissionEarned - commissionPaid;
+    
+    // Generate proper tracking link
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const referralLink = partner.referralLink || 
+      `${backendUrl}/api/partner-auth/verify-referral?code=${partner.referralCode}&redirect=${encodeURIComponent(frontendUrl + '/signup')}`;
+
     res.json({
       success: true,
       data: {
@@ -520,16 +537,16 @@ exports.getPartnerDashboard = async (req, res) => {
           name: partner.name,
           email: partner.email,
           referralCode: partner.referralCode,
-          referralLink: partner.referralLink,
+          referralLink: referralLink,
           status: partner.status,
-          commissionEarned: partner.commissionEarned || 0,
-          commissionPaid: partner.commissionPaid || 0,
-          availableCommission: partner.availableCommission || 0,
+          commissionEarned: commissionEarned, // Already in euros
+          commissionPaid: commissionPaid, // Already in euros
+          availableCommission: availableCommission, // Already in euros
           totalClientsReferred: partner.totalClientsReferred || 0,
           totalOrdersReferred: partner.totalOrdersReferred || 0,
           referralClicks: partner.referralClicks || 0,
-          conversionRate: partner.conversionRate || 0,
-          totalReferralSales: partner.totalReferralSales || 0
+          conversionRate: conversionRate,
+          totalReferralSales: (partner.totalReferralSales || 0) / 100 // Convert to euros
         },
         clients: partner.clientsReferred || [],
         orders: partner.ordersReferred || []
@@ -541,6 +558,83 @@ exports.getPartnerDashboard = async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to fetch partner data',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Also update getAdminPartnerDetails function:
+exports.getAdminPartnerDetails = async (req, res) => {
+  try {
+    if (!req.admin?.id) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized - Admin access required'
+      });
+    }
+
+    const partner = await Partner.findById(req.params.id)
+      .populate('clientsReferred', 'name email createdAt source orders')
+      .populate({
+        path: 'ordersReferred',
+        select: 'plan finalPrice originalPrice createdAt status customerDetails.email partnerCommission',
+        options: { sort: { createdAt: -1 } }
+      });
+
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found'
+      });
+    }
+
+    // Calculate conversion rate
+    const conversionRate = partner.referralClicks > 0 
+      ? parseFloat(((partner.totalClientsReferred / partner.referralClicks) * 100).toFixed(2))
+      : 0;
+
+    // Convert cents to euros
+    const commissionEarned = (partner.commissionEarned || 0) / 100;
+    const commissionPaid = (partner.commissionPaid || 0) / 100;
+    const availableCommission = commissionEarned - commissionPaid;
+    
+    // Generate proper tracking link
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const referralLink = partner.referralLink || 
+      `${backendUrl}/api/partner-auth/verify-referral?code=${partner.referralCode}&redirect=${encodeURIComponent(frontendUrl + '/signup')}`;
+
+    res.json({
+      success: true,
+      data: {
+        partner: {
+          id: partner._id,
+          name: partner.name,
+          email: partner.email,
+          referralCode: partner.referralCode,
+          referralLink: referralLink,
+          status: partner.status,
+          commissionEarned: commissionEarned, // In euros
+          commissionPaid: commissionPaid, // In euros
+          availableCommission: availableCommission, // In euros
+          totalClientsReferred: partner.totalClientsReferred || 0,
+          totalOrdersReferred: partner.totalOrdersReferred || 0,
+          referralClicks: partner.referralClicks || 0,
+          conversionRate: conversionRate,
+          totalReferralSales: (partner.totalReferralSales || 0) / 100, // In euros
+          createdAt: partner.createdAt,
+          referredBy: partner.referredBy
+        },
+        clients: partner.clientsReferred || [],
+        orders: partner.ordersReferred || []
+      }
+    });
+
+  } catch (error) {
+    console.error('Partner detail error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch partner details',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
