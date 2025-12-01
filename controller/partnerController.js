@@ -509,51 +509,54 @@ exports.getAdminPartnerDetails = async (req, res) => {
       });
     }
 
-    // Get the partner document without lean first
-    const partnerDoc = await Partner.findById(req.params.id)
-      .populate('clientsReferred', 'name email createdAt')
-      .populate('ordersReferred', 'plan finalPrice createdAt');
+    const partner = await Partner.findById(req.params.id)
+      .populate('clientsReferred', 'name email createdAt source orders')
+      .populate({
+        path: 'ordersReferred',
+        select: 'plan finalPrice originalPrice createdAt status customerDetails.email partnerCommission',
+        options: { sort: { createdAt: -1 } }
+      });
 
-    if (!partnerDoc) {
+    if (!partner) {
       return res.status(404).json({
         success: false,
         error: 'Partner not found'
       });
     }
 
-    // Convert to object and manually add virtuals if needed
-    const partner = partnerDoc.toObject({ virtuals: true });
-
-    // Calculate virtuals manually as fallback
-    const totalClientsReferred = partner.clientsReferred?.length || 0;
-    const totalOrdersReferred = partner.ordersReferred?.length || 0;
+    // Calculate conversion rate
     const conversionRate = partner.referralClicks > 0 
-      ? parseFloat(((totalClientsReferred / partner.referralClicks) * 100).toFixed(2))
+      ? parseFloat(((partner.totalClientsReferred / partner.referralClicks) * 100).toFixed(2))
       : 0;
+
+    // Ensure commission values are in cents
+    const commissionEarned = Math.floor(partner.commissionEarned || 0);
+    const commissionPaid = Math.floor(partner.commissionPaid || 0);
+    const availableCommission = commissionEarned - commissionPaid;
 
     res.json({
       success: true,
       data: {
-         partner: {
-        id: partner._id,
-        name: partner.name,
-        email: partner.email,
-        referralCode: partner.referralCode,
-        referralLink: partner.referralLink,
-        status: partner.status,
-        commissionEarned: partner.commissionEarned || 0,
-        commissionPaid: partner.commissionPaid || 0,
-        availableCommission: partner.availableCommission || 0,
-        totalClientsReferred: partner.totalClientsReferred || totalClientsReferred,
-        totalOrdersReferred: partner.totalOrdersReferred || totalOrdersReferred,
-        referralClicks: partner.referralClicks || 0,
-        conversionRate: partner.conversionRate || conversionRate,
-        totalReferralSales: partner.totalReferralSales || 0,
-        createdAt: partner.createdAt,
-        referredBy: partner.referredBy
-      },
-      clients: partner.clientsReferred || [],
-      orders: partner.ordersReferred || []
+        partner: {
+          id: partner._id,
+          name: partner.name,
+          email: partner.email,
+          referralCode: partner.referralCode,
+          referralLink: partner.referralLink || `${process.env.FRONTEND_URL}/?ref=${partner.referralCode}`,
+          status: partner.status,
+          commissionEarned: commissionEarned,
+          commissionPaid: commissionPaid,
+          availableCommission: availableCommission,
+          totalClientsReferred: partner.totalClientsReferred || 0,
+          totalOrdersReferred: partner.totalOrdersReferred || 0,
+          referralClicks: partner.referralClicks || 0,
+          conversionRate: conversionRate,
+          totalReferralSales: partner.totalReferralSales || 0,
+          createdAt: partner.createdAt,
+          referredBy: partner.referredBy
+        },
+        clients: partner.clientsReferred || [],
+        orders: partner.ordersReferred || []
       }
     });
 
