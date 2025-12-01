@@ -1,11 +1,12 @@
-// middleware/authMiddleware.js - SIMPLIFIED VERSION
+// middleware/authMiddleware.js
 const jwt = require('jsonwebtoken');
 const Partner = require('../model/Partner');
+const Admin = require('../model/adminModel');
 
 // Simple protect middleware for partners
 exports.protect = async (req, res, next) => {
   try {
-    console.log('🔐 Auth middleware called for:', req.originalUrl);
+    console.log('🔐 protect middleware called for:', req.originalUrl);
     
     let token;
     
@@ -119,46 +120,86 @@ exports.verifyPartner = (req, res, next) => {
   next();
 };
 
-// Admin middleware
+// Fixed Admin middleware
 exports.verifyAdmin = async (req, res, next) => {
   try {
+    console.log('🔐 verifyAdmin middleware called for:', req.originalUrl);
+    
     let token;
     
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
       token = req.headers.authorization.split(' ')[1];
+      console.log('✅ Admin token from header');
     }
     
     if (!token) {
+      console.log('❌ No admin token provided');
       return res.status(401).json({
         success: false,
         error: 'Admin access required - No token provided'
       });
     }
     
+    // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    console.log('✅ Admin token decoded:', {
+      id: decoded.id,
+      role: decoded.role,
+      email: decoded.email || 'No email'
+    });
     
+    // Check role - must be 'admin'
     if (decoded.role !== 'admin') {
+      console.log('❌ Not an admin token, role:', decoded.role);
       return res.status(403).json({
         success: false,
         error: 'Access denied. Admin account required'
       });
     }
     
-    // Find admin (if you have Admin model)
-    // const admin = await Admin.findById(decoded.id);
-    // if (!admin) {
-    //   return res.status(401).json({
-    //     success: false,
-    //     error: 'Admin not found'
-    //   });
-    // }
+    // Find admin in database
+    const admin = await Admin.findById(decoded.id);
     
-    req.admin = { id: decoded.id };
-    req.user = { id: decoded.id, role: 'admin' };
+    if (!admin) {
+      console.log('❌ Admin not found in database');
+      return res.status(401).json({
+        success: false,
+        error: 'Admin not found'
+      });
+    }
+    
+    console.log('✅ Admin authenticated:', {
+      id: admin._id,
+      name: admin.name,
+      email: admin.email
+    });
+    
+    // Set full admin object on request
+    req.admin = admin;
+    req.user = { id: admin._id, role: 'admin' };
     
     next();
+    
   } catch (error) {
-    return res.status(401).json({
+    console.error('❌ verifyAdmin error:', {
+      name: error.name,
+      message: error.message
+    });
+    
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid token'
+      });
+    }
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({
+        success: false,
+        error: 'Token expired'
+      });
+    }
+    
+    return res.status(500).json({
       success: false,
       error: 'Admin authentication failed'
     });
