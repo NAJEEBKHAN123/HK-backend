@@ -4,7 +4,7 @@ const Client = require('../model/Client');
 const { sendEmail } = require('../services/partnerEmailService');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
+
 // Generate partner invite credentials
 exports.generatePartnerCredential = async (req, res) => {
   try {
@@ -83,12 +83,19 @@ exports.registerPartner = async (req, res) => {
     }
 
     const referralCode = `HKP-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+    
+    // Create tracking link
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const trackingLink = `${backendUrl}/api/partner-auth/verify-referral?code=${referralCode}&redirect=${encodeURIComponent(frontendUrl + '/signup')}`;
+    
     const partner = await Partner.create({
       name,
       email,
       password,
       status: 'active',
       referralCode,
+      referralLink: trackingLink,
       referredBy: invite.createdBy
     });
 
@@ -105,8 +112,8 @@ exports.registerPartner = async (req, res) => {
         <h2>Welcome to Our Partner Program</h2>
         <p>Your partner account has been successfully created.</p>
         <p>Your unique referral code: <strong>${partner.referralCode}</strong></p>
-        <p>Your partner dashboard: <a href="${partner.referralLink}">${partner.referralLink}</a></p>
-        <p>Start sharing your referral link: ${partner.referralLink}</p>
+        <p>Your tracking link: <a href="${partner.referralLink}">${partner.referralLink}</a></p>
+        <p>Start sharing your link to track clicks and earn commissions!</p>
       `
     });
 
@@ -119,12 +126,11 @@ exports.registerPartner = async (req, res) => {
         email: partner.email,
         referralCode: partner.referralCode,
         referralLink: partner.referralLink,
-        dashboardLink: `${process.env.FRONTEND_URL}/partner/dashboard`
+        dashboardLink: `${frontendUrl}/partner/dashboard`
       }
     });
 
   } catch (error) {
-
     console.error('Registration error:', error);
     res.status(500).json({
       success: false,
@@ -134,12 +140,176 @@ exports.registerPartner = async (req, res) => {
   }
 };
 
-// In your partnerController.js
+// ========== CLICK TRACKING FUNCTIONS ==========
+
+// Verify referral code - TRACKS CLICKS
+exports.verifyReferral = async (req, res) => {
+  try {
+    const { code, redirect } = req.query;
+    
+    console.log(`🔗 Click tracking initiated for code: ${code}`);
+    
+    // Find partner first to check if exists
+    const partner = await Partner.findOne({ 
+      referralCode: code,
+      status: 'active'
+    });
+
+    if (!partner) {
+      console.log(`❌ Partner not found or inactive: ${code}`);
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+      return res.redirect(`${frontendUrl}/signup`);
+    }
+
+    // INCREMENT CLICK COUNT
+    partner.referralClicks = (partner.referralClicks || 0) + 1;
+    partner.lastClickIP = req.ip;
+    partner.lastClickDate = new Date();
+    await partner.save();
+
+    console.log(`✅ Click tracked: ${partner.email}, Total clicks: ${partner.referralClicks}`);
+    
+    // Store referral code in cookie
+    res.cookie('referralCode', code, {
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production'
+    });
+    
+    // Redirect to signup
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const targetUrl = redirect 
+      ? `${redirect}?ref=${code}` 
+      : `${frontendUrl}/signup?ref=${code}`;
+    
+    console.log(`🔄 Redirecting to: ${targetUrl}`);
+    res.redirect(targetUrl);
+    
+  } catch (error) {
+    console.error('❌ Referral verification error:', error);
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    res.redirect(`${frontendUrl}/signup`);
+  }
+};
+
+// Test click tracking endpoint
+exports.testClickTracking = async (req, res) => {
+  try {
+    const { code } = req.params;
+    
+    console.log(`🧪 Test click for code: ${code}`);
+    
+    const partner = await Partner.findOne({ referralCode: code });
+    
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found',
+        code
+      });
+    }
+    
+    // Increment click count
+    partner.referralClicks = (partner.referralClicks || 0) + 1;
+    await partner.save();
+    
+    res.json({
+      success: true,
+      message: `Test click counted for ${partner.email}`,
+      totalClicks: partner.referralClicks,
+      partner: {
+        name: partner.name,
+        email: partner.email,
+        referralCode: partner.referralCode,
+        status: partner.status
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+};
+
+// Manually update clicks (admin)
+exports.manualUpdateClicks = async (req, res) => {
+  try {
+    const { clicks } = req.body;
+    
+    const partner = await Partner.findById(req.params.id);
+    
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found'
+      });
+    }
+    
+    // Update clicks
+    partner.referralClicks = parseInt(clicks) || 0;
+    await partner.save();
+    
+    res.json({
+      success: true,
+      message: `Clicks updated to ${partner.referralClicks}`,
+      partner: {
+        name: partner.name,
+        email: partner.email,
+        referralCode: partner.referralCode,
+        referralClicks: partner.referralClicks
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+// Quick fix for clicks
+exports.fixPartnerClicks = async (req, res) => {
+  try {
+    const { clicks } = req.body;
+    
+    const partner = await Partner.findById(req.params.id);
+    
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found'
+      });
+    }
+    
+    // Set clicks directly
+    partner.referralClicks = parseInt(clicks) || 0;
+    await partner.save();
+    
+    res.json({
+      success: true,
+      message: `Clicks fixed to ${partner.referralClicks}`,
+      partner: {
+        name: partner.name,
+        email: partner.email,
+        referralCode: partner.referralCode,
+        referralClicks: partner.referralClicks
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+// ========== AUTHENTICATION FUNCTIONS ==========
+
 exports.loginPartner = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Validate input
     if (!email || !password) {
       return res.status(400).json({
         success: false,
@@ -147,7 +317,6 @@ exports.loginPartner = async (req, res) => {
       });
     }
 
-    // Check if partner exists
     const partner = await Partner.findOne({ email }).select('+password');
     if (!partner) {
       return res.status(401).json({
@@ -156,7 +325,6 @@ exports.loginPartner = async (req, res) => {
       });
     }
 
-    // Check password
     const isMatch = await partner.comparePassword(password);
     if (!isMatch) {
       return res.status(401).json({
@@ -165,14 +333,12 @@ exports.loginPartner = async (req, res) => {
       });
     }
 
-    // Create token
     const token = jwt.sign(
       { id: partner._id, role: 'partner' },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRE || '30d' }
     );
 
-    // Set cookie options
     const cookieOptions = {
       expires: new Date(
         Date.now() + (process.env.JWT_COOKIE_EXPIRE || 30) * 24 * 60 * 60 * 1000
@@ -181,7 +347,6 @@ exports.loginPartner = async (req, res) => {
       secure: process.env.NODE_ENV === 'production'
     };
 
-    // Send response
     res
       .status(200)
       .cookie('token', token, cookieOptions)
@@ -192,7 +357,8 @@ exports.loginPartner = async (req, res) => {
           id: partner._id,
           name: partner.name,
           email: partner.email,
-          referralCode: partner.referralCode
+          referralCode: partner.referralCode,
+          referralClicks: partner.referralClicks || 0
         }
       });
 
@@ -236,7 +402,8 @@ exports.getCurrentPartner = async (req, res) => {
         id: partner._id,
         name: partner.name,
         email: partner.email,
-        referralCode: partner.referralCode
+        referralCode: partner.referralCode,
+        referralClicks: partner.referralClicks || 0
       }
     });
   } catch (error) {
@@ -314,39 +481,7 @@ exports.verifyPartners = async (req, res) => {
   }
 };
 
-// Verify referral code
-exports.verifyReferral = async (req, res) => {
-  try {
-    const { code } = req.query;
-    
-    // Track the click
-    await Partner.findOneAndUpdate(
-      { referralCode: code },
-      { $inc: { referralClicks: 1 } }
-    );
-
-    const partner = await Partner.findOne({ 
-      referralCode: code,
-      status: 'active'
-    }).select('name email referralCode');
-
-    if (!partner) {
-      return res.json({ valid: false });
-    }
-    
-    res.json({
-      valid: true,
-      partner: {
-        name: partner.name,
-        email: partner.email,
-        referralCode: partner.referralCode
-      }
-    });
-    
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-};
+// ========== DASHBOARD FUNCTIONS ==========
 
 // Get partner dashboard data
 exports.getPartnerDashboard = async (req, res) => {
@@ -387,14 +522,14 @@ exports.getPartnerDashboard = async (req, res) => {
           referralCode: partner.referralCode,
           referralLink: partner.referralLink,
           status: partner.status,
-          commissionEarned: partner.commissionEarned,
-          commissionPaid: partner.commissionPaid,
-          availableCommission: partner.availableCommission,
-          totalClientsReferred: partner.totalClientsReferred,
-          totalOrdersReferred: partner.totalOrdersReferred,
-          referralClicks: partner.referralClicks,
-          conversionRate: partner.conversionRate,
-          totalReferralSales: partner.totalReferralSales
+          commissionEarned: partner.commissionEarned || 0,
+          commissionPaid: partner.commissionPaid || 0,
+          availableCommission: partner.availableCommission || 0,
+          totalClientsReferred: partner.totalClientsReferred || 0,
+          totalOrdersReferred: partner.totalOrdersReferred || 0,
+          referralClicks: partner.referralClicks || 0,
+          conversionRate: partner.conversionRate || 0,
+          totalReferralSales: partner.totalReferralSales || 0
         },
         clients: partner.clientsReferred || [],
         orders: partner.ordersReferred || []
@@ -410,6 +545,7 @@ exports.getPartnerDashboard = async (req, res) => {
     });
   }
 };
+
 // Request commission payout
 exports.requestPayout = async (req, res) => {
   try {
@@ -421,7 +557,7 @@ exports.requestPayout = async (req, res) => {
       });
     }
 
-    const availableCommission = partner.availableCommission;
+    const availableCommission = partner.availableCommission || 0;
     if (availableCommission <= 0) {
       return res.status(400).json({
         success: false,
@@ -429,8 +565,7 @@ exports.requestPayout = async (req, res) => {
       });
     }
 
-    // In production, integrate with Stripe/PayPal here
-    partner.commissionPaid = partner.commissionEarned;
+    partner.commissionPaid = partner.commissionEarned || 0;
     await partner.save();
 
     await sendEmail({
@@ -438,14 +573,14 @@ exports.requestPayout = async (req, res) => {
       subject: 'Payout Request Received',
       html: `
         <h2>Payout Request Processed</h2>
-        <p>We've received your payout request for $${(availableCommission / 100).toFixed(2)}.</p>
+        <p>We've received your payout request for €${(availableCommission / 100).toFixed(2)}.</p>
         <p>The amount should appear in your account within 3-5 business days.</p>
       `
     });
 
     res.json({
       success: true,
-      message: `Payout of $${(availableCommission / 100).toFixed(2)} initiated`,
+      message: `Payout of €${(availableCommission / 100).toFixed(2)} initiated`,
       newBalance: 0
     });
 
@@ -458,6 +593,7 @@ exports.requestPayout = async (req, res) => {
   }
 };
 
+// ========== ADMIN FUNCTIONS ==========
 
 // Get all partners for admin dashboard
 exports.getAllPartners = async (req, res) => {
@@ -499,7 +635,6 @@ exports.getAllPartners = async (req, res) => {
 };
 
 // Get detailed partner info for admin
-// In partnerController.js
 exports.getAdminPartnerDetails = async (req, res) => {
   try {
     if (!req.admin?.id) {
@@ -525,14 +660,20 @@ exports.getAdminPartnerDetails = async (req, res) => {
     }
 
     // Calculate conversion rate
-    const conversionRate = partner.referralClicks > 0 
-      ? parseFloat(((partner.totalClientsReferred / partner.referralClicks) * 100).toFixed(2))
+    const conversionRate = (partner.referralClicks || 0) > 0 
+      ? parseFloat(((partner.totalClientsReferred || 0) / (partner.referralClicks || 1) * 100).toFixed(2))
       : 0;
 
     // Ensure commission values are in cents
     const commissionEarned = Math.floor(partner.commissionEarned || 0);
     const commissionPaid = Math.floor(partner.commissionPaid || 0);
     const availableCommission = commissionEarned - commissionPaid;
+    
+    // Generate proper tracking link
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const referralLink = partner.referralLink || 
+      `${backendUrl}/api/partner-auth/verify-referral?code=${partner.referralCode}&redirect=${encodeURIComponent(frontendUrl + '/signup')}`;
 
     res.json({
       success: true,
@@ -542,7 +683,7 @@ exports.getAdminPartnerDetails = async (req, res) => {
           name: partner.name,
           email: partner.email,
           referralCode: partner.referralCode,
-          referralLink: partner.referralLink || `${process.env.FRONTEND_URL}/?ref=${partner.referralCode}`,
+          referralLink: referralLink,
           status: partner.status,
           commissionEarned: commissionEarned,
           commissionPaid: commissionPaid,
@@ -649,7 +790,7 @@ exports.updatePartnerStatus = async (req, res) => {
   }
 };
 
-// In partnerController.js, update adminProcessPayout function
+// Admin process payout (without Payout model)
 exports.adminProcessPayout = async (req, res) => {
   try {
     const { amount, notes } = req.body;
@@ -677,15 +818,6 @@ exports.adminProcessPayout = async (req, res) => {
     partner.commissionPaid += amountInCents;
     await partner.save();
 
-    // Create payout record
-    const payout = await Payout.create({
-      partner: partner._id,
-      amount: amountInCents, // Store in cents
-      notes,
-      processedBy: req.admin.id,
-      status: 'completed'
-    });
-
     // Send email notification
     await sendEmail({
       to: partner.email,
@@ -695,10 +827,7 @@ exports.adminProcessPayout = async (req, res) => {
 
     res.json({
       success: true,
-      payout: {
-        ...payout.toObject(),
-        amount: amount // Return in Euros for frontend
-      },
+      message: `Payout of €${amount.toFixed(2)} processed successfully`,
       partner: {
         ...partner.toObject(),
         commissionEarned: partner.commissionEarned / 100, // Convert to Euros
@@ -710,6 +839,42 @@ exports.adminProcessPayout = async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to process payout'
+    });
+  }
+};
+
+// Debug endpoint to check partner clicks
+exports.debugPartnerClicks = async (req, res) => {
+  try {
+    const { code } = req.params;
+    
+    const partner = await Partner.findOne({ referralCode: code });
+    
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found',
+        code
+      });
+    }
+    
+    res.json({
+      success: true,
+      partner: {
+        name: partner.name,
+        email: partner.email,
+        referralCode: partner.referralCode,
+        referralClicks: partner.referralClicks || 0,
+        referralLink: partner.referralLink,
+        status: partner.status,
+        createdAt: partner.createdAt
+      },
+      modelFields: Object.keys(partner._doc)
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 };
