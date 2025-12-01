@@ -306,9 +306,12 @@ exports.fixPartnerClicks = async (req, res) => {
 
 // ========== AUTHENTICATION FUNCTIONS ==========
 
+// In partnerController.js loginPartner function - UPDATED:
 exports.loginPartner = async (req, res) => {
   try {
     const { email, password } = req.body;
+
+    console.log('🔐 Login attempt for:', email);
 
     if (!email || !password) {
       return res.status(400).json({
@@ -319,32 +322,53 @@ exports.loginPartner = async (req, res) => {
 
     const partner = await Partner.findOne({ email }).select('+password');
     if (!partner) {
+      console.log('❌ Partner not found:', email);
       return res.status(401).json({
         success: false,
         error: 'Invalid credentials'
       });
     }
+
+    console.log('✅ Partner found:', {
+      id: partner._id,
+      name: partner.name,
+      status: partner.status
+    });
 
     const isMatch = await partner.comparePassword(password);
     if (!isMatch) {
+      console.log('❌ Password mismatch for:', email);
       return res.status(401).json({
         success: false,
         error: 'Invalid credentials'
       });
     }
 
+    // ========== IMPORTANT: Create token with correct structure ==========
     const token = jwt.sign(
-      { id: partner._id, role: 'partner' },
+      { 
+        id: partner._id, 
+        role: 'partner', // MUST be 'partner'
+        email: partner.email // Add email for debugging
+      },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRE || '30d' }
     );
+
+    console.log('✅ Token created for partner:', {
+      partnerId: partner._id,
+      email: partner.email,
+      role: 'partner',
+      tokenLength: token.length
+    });
 
     const cookieOptions = {
       expires: new Date(
         Date.now() + (process.env.JWT_COOKIE_EXPIRE || 30) * 24 * 60 * 60 * 1000
       ),
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production'
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict'
     };
 
     res
@@ -358,11 +382,13 @@ exports.loginPartner = async (req, res) => {
           name: partner.name,
           email: partner.email,
           referralCode: partner.referralCode,
-          referralClicks: partner.referralClicks || 0
+          referralClicks: partner.referralClicks || 0,
+          status: partner.status
         }
       });
 
   } catch (error) {
+    console.error('❌ Login error:', error);
     res.status(500).json({
       success: false,
       error: 'Login failed',

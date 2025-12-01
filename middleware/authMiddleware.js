@@ -37,6 +37,12 @@ const protect = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
+    console.log('🔐 Token decoded:', {
+      id: decoded.id,
+      role: decoded.role,
+      email: decoded.email || 'No email in token'
+    });
+    
     // Standardize user attachment
     req.user = {
       id: decoded.id,
@@ -59,7 +65,7 @@ const protect = async (req, res, next) => {
         req.admin = userModel;
         break;
       default:
-        throw new Error('Unknown user role');
+        throw new Error('Unknown user role: ' + decoded.role);
     }
 
     if (!userModel) {
@@ -69,9 +75,15 @@ const protect = async (req, res, next) => {
       });
     }
     
+    console.log('✅ User authenticated:', {
+      role: decoded.role,
+      name: userModel.name,
+      email: userModel.email
+    });
+    
     next();
   } catch (err) {
-    console.error('Authentication error:', err.message);
+    console.error('❌ Authentication error:', err.message);
     
     let errorMessage = 'Authentication failed';
     if (err.name === 'JsonWebTokenError') {
@@ -90,50 +102,40 @@ const protect = async (req, res, next) => {
 
 // Role verification middlewares
 const verifyAdmin = (req, res, next) => {
-  const token = req.headers.authorization?.split(" ")[1]; // Bearer <token>
-
-  if (!token) {
-    return res.status(401).json({ message: "Access denied. No token provided." });
-  }
-
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (decoded.role !== "admin") {
-      return res.status(403).json({ message: "Access denied. Not an admin." });
-    }
-
-    req.admin = decoded; // attach admin to request
-    next();
-  } catch (err) {
-    res.status(400).json({ message: "Invalid token." });
-  }
-};
-
-const verifyPartner = (req, res, next) => {
-  // First ensure protect middleware ran
-  if (!req.user) {
-    return res.status(401).json({
+  console.log('🔍 Checking admin access:', {
+    hasAdmin: !!req.admin,
+    userRole: req.user?.role
+  });
+  
+  if (!req.admin || req.user?.role !== 'admin') {
+    return res.status(403).json({
       success: false,
-      error: 'Authentication required'
+      error: 'Access denied. Admin account required'
     });
   }
+  next();
+};
 
-  // Then verify partner role
-  if (req.user.role !== 'partner') {
+// FIXED: verifyPartner function
+const verifyPartner = (req, res, next) => {
+  console.log('🔍 Checking partner access:', {
+    hasPartner: !!req.partner,
+    userRole: req.user?.role,
+    partnerId: req.partner?._id,
+    partnerEmail: req.partner?.email
+  });
+  
+  if (!req.partner || req.user?.role !== 'partner') {
+    console.log('❌ Partner access denied:', {
+      reason: !req.partner ? 'No partner object' : 'Wrong role: ' + req.user?.role
+    });
     return res.status(403).json({
       success: false,
       error: 'Access denied. Partner account required'
     });
   }
-
-  // Ensure partner document exists
-  if (!req.partner) {
-    return res.status(403).json({
-      success: false,
-      error: 'Partner account not found'
-    });
-  }
-
+  
+  console.log('✅ Partner access granted:', req.partner.email);
   next();
 };
 
