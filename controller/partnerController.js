@@ -5,6 +5,282 @@ const { sendEmail } = require('../services/partnerEmailService');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 
+// ========== LOGIN FUNCTION ==========
+exports.loginPartner = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    console.log('🔐 Login attempt for:', email);
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide email and password'
+      });
+    }
+
+    const partner = await Partner.findOne({ email }).select('+password');
+    if (!partner) {
+      console.log('❌ Partner not found:', email);
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid credentials'
+      });
+    }
+
+    console.log('✅ Partner found:', {
+      id: partner._id,
+      name: partner.name,
+      status: partner.status
+    });
+
+    const isMatch = await partner.comparePassword(password);
+    if (!isMatch) {
+      console.log('❌ Password mismatch for:', email);
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid credentials'
+      });
+    }
+
+    // Check if partner is active
+    if (partner.status !== 'active') {
+      console.log('❌ Partner not active:', partner.status);
+      return res.status(401).json({
+        success: false,
+        error: 'Account is not active. Please contact support.'
+      });
+    }
+
+    // ========== CREATE TOKEN ==========
+    const token = jwt.sign(
+      { 
+        id: partner._id, 
+        role: 'partner',
+        email: partner.email
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRE || '30d' }
+    );
+
+    console.log('✅ Token created for partner:', {
+      partnerId: partner._id,
+      email: partner.email,
+      role: 'partner',
+      tokenLength: token.length
+    });
+
+    const cookieOptions = {
+      expires: new Date(
+        Date.now() + (process.env.JWT_COOKIE_EXPIRE || 30) * 24 * 60 * 60 * 1000
+      ),
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict'
+    };
+
+    res
+      .status(200)
+      .cookie('token', token, cookieOptions)
+      .json({
+        success: true,
+        token,
+        partner: {
+          id: partner._id,
+          name: partner.name,
+          email: partner.email,
+          referralCode: partner.referralCode,
+          referralClicks: partner.referralClicks || 0,
+          status: partner.status
+        }
+      });
+
+  } catch (error) {
+    console.error('❌ Login error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Login failed',
+      details: error.message
+    });
+  }
+};
+
+// ========== DASHBOARD FUNCTIONS ==========
+
+// Get partner dashboard data - FIXED COMMISSION DISPLAY
+exports.getPartnerDashboard = async (req, res) => {
+  try {
+    console.log('📊 Fetching dashboard for partner:', req.partner?._id);
+    
+    if (!req.partner?.id) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized - No partner ID found'
+      });
+    }
+
+    const partner = await Partner.findById(req.partner.id)
+      .populate({
+        path: 'clientsReferred',
+        select: 'name email createdAt source orders',
+        options: { sort: { createdAt: -1 } }
+      })
+      .populate({
+        path: 'ordersReferred',
+        select: 'plan finalPrice createdAt status',
+        options: { sort: { createdAt: -1 } }
+      });
+
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found'
+      });
+    }
+
+    // Calculate conversion rate
+    const conversionRate = (partner.referralClicks || 0) > 0 
+      ? (((partner.totalClientsReferred || 0) / partner.referralClicks) * 100).toFixed(2)
+      : '0.00';
+
+    // ========== FIX: MULTIPLY BY 100 ==========
+    const commissionEarned = (partner.commissionEarned || 0) * 100; // 13.80 → 1380
+    const commissionPaid = (partner.commissionPaid || 0) * 100; // 0 → 0
+    const availableCommission = commissionEarned - commissionPaid;
+    const totalReferralSales = (partner.totalReferralSales || 0) * 100;
+    
+    // Generate proper tracking link
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const referralLink = partner.referralLink || 
+      `${backendUrl}/api/partner-auth/verify-referral?code=${partner.referralCode}&redirect=${encodeURIComponent(frontendUrl + '/signup')}`;
+
+    console.log('💰 Commission values:', {
+      dbEarned: partner.commissionEarned,
+      displayEarned: commissionEarned,
+      dbPaid: partner.commissionPaid,
+      displayPaid: commissionPaid
+    });
+
+    res.json({
+      success: true,
+      data: {
+        partner: {
+          id: partner._id,
+          name: partner.name,
+          email: partner.email,
+          referralCode: partner.referralCode,
+          referralLink: referralLink,
+          status: partner.status,
+          commissionEarned: commissionEarned, // Now 1380 not 13.80
+          commissionPaid: commissionPaid, // Now 0 not 0
+          availableCommission: availableCommission, // Now 1380 not 13.80
+          totalClientsReferred: partner.totalClientsReferred || 0,
+          totalOrdersReferred: partner.totalOrdersReferred || 0,
+          referralClicks: partner.referralClicks || 0,
+          conversionRate: conversionRate,
+          totalReferralSales: totalReferralSales,
+          commissionRate: partner.commissionRate || 10
+        },
+        clients: partner.clientsReferred || [],
+        orders: partner.ordersReferred || []
+      }
+    });
+
+  } catch (error) {
+    console.error('Dashboard error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch partner data',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Verify partner (for protected route)
+exports.verifyPartners = async (req, res) => {
+  try {
+    console.log('🔍 Verifying partner access:', {
+      partnerId: req.partner?._id,
+      partnerEmail: req.partner?.email,
+      userRole: req.user?.role
+    });
+
+    if (!req.partner) {
+      console.log('❌ No partner in request');
+      return res.status(401).json({
+        success: false,
+        error: 'Not authenticated as partner'
+      });
+    }
+
+    const partner = await Partner.findById(req.partner.id)
+      .select('-password')
+      .lean();
+
+    if (!partner) {
+      console.log('❌ Partner not found in database:', req.partner.id);
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found'
+      });
+    }
+
+    console.log('✅ Partner verified:', partner.email);
+
+    res.status(200).json({
+      success: true,
+      partner: {
+        id: partner._id,
+        name: partner.name,
+        email: partner.email,
+        referralCode: partner.referralCode,
+        status: partner.status
+      }
+    });
+  } catch (error) {
+    console.error('Verification failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Verification failed',
+      details: error.message
+    });
+  }
+};
+
+// Get current partner
+exports.getCurrentPartner = async (req, res) => {
+  try {
+    const partner = await Partner.findById(req.partner.id);
+
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      partner: {
+        id: partner._id,
+        name: partner.name,
+        email: partner.email,
+        referralCode: partner.referralCode,
+        referralClicks: partner.referralClicks || 0
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch partner',
+      details: error.message
+    });
+  }
+};
+
+// ========== OTHER FUNCTIONS ==========
+
 // Generate partner invite credentials
 exports.generatePartnerCredential = async (req, res) => {
   try {
@@ -27,7 +303,7 @@ exports.generatePartnerCredential = async (req, res) => {
       token,
       shortCode,
       createdBy: req.admin.id,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
     });
 
     res.status(201).json({
@@ -51,7 +327,6 @@ exports.registerPartner = async (req, res) => {
   try {
     const { token, shortCode, email, name, password } = req.body;
 
-    // Validate input
     if (!token && !shortCode) {
       return res.status(400).json({
         success: false,
@@ -84,7 +359,6 @@ exports.registerPartner = async (req, res) => {
 
     const referralCode = `HKP-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
     
-    // Create tracking link
     const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
     const trackingLink = `${backendUrl}/api/partner-auth/verify-referral?code=${referralCode}&redirect=${encodeURIComponent(frontendUrl + '/signup')}`;
@@ -140,16 +414,13 @@ exports.registerPartner = async (req, res) => {
   }
 };
 
-// ========== CLICK TRACKING FUNCTIONS ==========
-
-// Verify referral code - TRACKS CLICKS
+// Verify referral code
 exports.verifyReferral = async (req, res) => {
   try {
     const { code, redirect } = req.query;
     
-    console.log(`🔗 Click tracking initiated for code: ${code}`);
+    console.log(`🔗 Click tracking for code: ${code}`);
     
-    // Find partner first to check if exists
     const partner = await Partner.findOne({ 
       referralCode: code,
       status: 'active'
@@ -161,7 +432,6 @@ exports.verifyReferral = async (req, res) => {
       return res.redirect(`${frontendUrl}/signup`);
     }
 
-    // INCREMENT CLICK COUNT
     partner.referralClicks = (partner.referralClicks || 0) + 1;
     partner.lastClickIP = req.ip;
     partner.lastClickDate = new Date();
@@ -169,14 +439,12 @@ exports.verifyReferral = async (req, res) => {
 
     console.log(`✅ Click tracked: ${partner.email}, Total clicks: ${partner.referralClicks}`);
     
-    // Store referral code in cookie
     res.cookie('referralCode', code, {
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      maxAge: 30 * 24 * 60 * 60 * 1000,
       httpOnly: false,
       secure: process.env.NODE_ENV === 'production'
     });
     
-    // Redirect to signup
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
     const targetUrl = redirect 
       ? `${redirect}?ref=${code}` 
@@ -189,255 +457,6 @@ exports.verifyReferral = async (req, res) => {
     console.error('❌ Referral verification error:', error);
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
     res.redirect(`${frontendUrl}/signup`);
-  }
-};
-
-// Test click tracking endpoint
-exports.testClickTracking = async (req, res) => {
-  try {
-    const { code } = req.params;
-    
-    console.log(`🧪 Test click for code: ${code}`);
-    
-    const partner = await Partner.findOne({ referralCode: code });
-    
-    if (!partner) {
-      return res.status(404).json({
-        success: false,
-        error: 'Partner not found',
-        code
-      });
-    }
-    
-    // Increment click count
-    partner.referralClicks = (partner.referralClicks || 0) + 1;
-    await partner.save();
-    
-    res.json({
-      success: true,
-      message: `Test click counted for ${partner.email}`,
-      totalClicks: partner.referralClicks,
-      partner: {
-        name: partner.name,
-        email: partner.email,
-        referralCode: partner.referralCode,
-        status: partner.status
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ 
-      success: false,
-      error: error.message 
-    });
-  }
-};
-
-// Manually update clicks (admin)
-exports.manualUpdateClicks = async (req, res) => {
-  try {
-    const { clicks } = req.body;
-    
-    const partner = await Partner.findById(req.params.id);
-    
-    if (!partner) {
-      return res.status(404).json({
-        success: false,
-        error: 'Partner not found'
-      });
-    }
-    
-    // Update clicks
-    partner.referralClicks = parseInt(clicks) || 0;
-    await partner.save();
-    
-    res.json({
-      success: true,
-      message: `Clicks updated to ${partner.referralClicks}`,
-      partner: {
-        name: partner.name,
-        email: partner.email,
-        referralCode: partner.referralCode,
-        referralClicks: partner.referralClicks
-      }
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-};
-
-// Quick fix for clicks
-exports.fixPartnerClicks = async (req, res) => {
-  try {
-    const { clicks } = req.body;
-    
-    const partner = await Partner.findById(req.params.id);
-    
-    if (!partner) {
-      return res.status(404).json({
-        success: false,
-        error: 'Partner not found'
-      });
-    }
-    
-    // Set clicks directly
-    partner.referralClicks = parseInt(clicks) || 0;
-    await partner.save();
-    
-    res.json({
-      success: true,
-      message: `Clicks fixed to ${partner.referralClicks}`,
-      partner: {
-        name: partner.name,
-        email: partner.email,
-        referralCode: partner.referralCode,
-        referralClicks: partner.referralClicks
-      }
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-};
-
-// ========== AUTHENTICATION FUNCTIONS ==========
-
-// In partnerController.js loginPartner function - UPDATED:
-exports.loginPartner = async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    console.log('🔐 Login attempt for:', email);
-
-    if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        error: 'Please provide email and password'
-      });
-    }
-
-    const partner = await Partner.findOne({ email }).select('+password');
-    if (!partner) {
-      console.log('❌ Partner not found:', email);
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid credentials'
-      });
-    }
-
-    console.log('✅ Partner found:', {
-      id: partner._id,
-      name: partner.name,
-      status: partner.status
-    });
-
-    const isMatch = await partner.comparePassword(password);
-    if (!isMatch) {
-      console.log('❌ Password mismatch for:', email);
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid credentials'
-      });
-    }
-
-    // ========== IMPORTANT: Create token with correct structure ==========
-    const token = jwt.sign(
-      { 
-        id: partner._id, 
-        role: 'partner', // MUST be 'partner'
-        email: partner.email // Add email for debugging
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRE || '30d' }
-    );
-
-    console.log('✅ Token created for partner:', {
-      partnerId: partner._id,
-      email: partner.email,
-      role: 'partner',
-      tokenLength: token.length
-    });
-
-    const cookieOptions = {
-      expires: new Date(
-        Date.now() + (process.env.JWT_COOKIE_EXPIRE || 30) * 24 * 60 * 60 * 1000
-      ),
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict'
-    };
-
-    res
-      .status(200)
-      .cookie('token', token, cookieOptions)
-      .json({
-        success: true,
-        token,
-        partner: {
-          id: partner._id,
-          name: partner.name,
-          email: partner.email,
-          referralCode: partner.referralCode,
-          referralClicks: partner.referralClicks || 0,
-          status: partner.status
-        }
-      });
-
-  } catch (error) {
-    console.error('❌ Login error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Login failed',
-      details: error.message
-    });
-  }
-};
-
-// Logout partner
-exports.logoutPartner = async (req, res) => {
-  res.cookie('token', 'none', {
-    expires: new Date(Date.now() + 10 * 1000),
-    httpOnly: true
-  });
-
-  res.status(200).json({
-    success: true,
-    message: 'Logged out successfully'
-  });
-};
-
-// Get current logged in partner
-exports.getCurrentPartner = async (req, res) => {
-  try {
-    const partner = await Partner.findById(req.partner.id);
-
-    if (!partner) {
-      return res.status(404).json({
-        success: false,
-        error: 'Partner not found'
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      partner: {
-        id: partner._id,
-        name: partner.name,
-        email: partner.email,
-        referralCode: partner.referralCode,
-        referralClicks: partner.referralClicks || 0
-      }
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch partner',
-      details: error.message
-    });
   }
 };
 
@@ -476,200 +495,17 @@ exports.verifyInvite = async (req, res) => {
   }
 };
 
-exports.verifyPartners = async (req, res) => {
-  try {
-    const partner = await Partner.findById(req.partner.id)
-      .select('-password')
-      .lean();
+// Logout partner
+exports.logoutPartner = async (req, res) => {
+  res.cookie('token', 'none', {
+    expires: new Date(Date.now() + 10 * 1000),
+    httpOnly: true
+  });
 
-    if (!partner) {
-      return res.status(404).json({
-        success: false,
-        error: 'Partner not found'
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      partner: {
-        id: partner._id,
-        name: partner.name,
-        email: partner.email,
-        referralCode: partner.referralCode
-      }
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Verification failed',
-      details: error.message
-    });
-  }
-};
-
-// ========== DASHBOARD FUNCTIONS ==========
-
-// Get partner dashboard data
-// In the getPartnerDashboard function, update the response:
-// Get partner dashboard data
-exports.getPartnerDashboard = async (req, res) => {
-  try {
-    if (!req.partner?.id) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized - No partner ID found'
-      });
-    }
-
-    const partner = await Partner.findById(req.partner.id)
-      .populate({
-        path: 'clientsReferred',
-        select: 'name email createdAt source orders',
-        options: { sort: { createdAt: -1 } }
-      })
-      .populate({
-        path: 'ordersReferred',
-        select: 'plan finalPrice createdAt status',
-        options: { sort: { createdAt: -1 } }
-      });
-
-    if (!partner) {
-      return res.status(404).json({
-        success: false,
-        error: 'Partner not found'
-      });
-    }
-
-    // Calculate conversion rate
-    const conversionRate = (partner.referralClicks || 0) > 0 
-      ? (((partner.totalClientsReferred || 0) / partner.referralClicks) * 100).toFixed(2)
-      : '0.00';
-
-    // ========== FIX: MULTIPLY BY 100 ==========
-    const commissionEarned = (partner.commissionEarned || 0) * 100; // 13.80 → 1380
-    const commissionPaid = (partner.commissionPaid || 0) * 100; // 0 → 0
-    const availableCommission = commissionEarned - commissionPaid;
-    const totalReferralSales = (partner.totalReferralSales || 0) * 100;
-    
-    // Generate proper tracking link
-    const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    const referralLink = partner.referralLink || 
-      `${backendUrl}/api/partner-auth/verify-referral?code=${partner.referralCode}&redirect=${encodeURIComponent(frontendUrl + '/signup')}`;
-
-    res.json({
-      success: true,
-      data: {
-        partner: {
-          id: partner._id,
-          name: partner.name,
-          email: partner.email,
-          referralCode: partner.referralCode,
-          referralLink: referralLink,
-          status: partner.status,
-          commissionEarned: commissionEarned, // Now 1380 not 13.80
-          commissionPaid: commissionPaid, // Now 0 not 0
-          availableCommission: availableCommission, // Now 1380 not 13.80
-          totalClientsReferred: partner.totalClientsReferred || 0,
-          totalOrdersReferred: partner.totalOrdersReferred || 0,
-          referralClicks: partner.referralClicks || 0,
-          conversionRate: conversionRate,
-          totalReferralSales: totalReferralSales,
-          commissionRate: partner.commissionRate || 10
-        },
-        clients: partner.clientsReferred || [],
-        orders: partner.ordersReferred || []
-      }
-    });
-
-  } catch (error) {
-    console.error('Dashboard error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch partner data',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-};
-
-
-// Also update getAdminPartnerDetails function:
-exports.getAdminPartnerDetails = async (req, res) => {
-  try {
-    if (!req.admin?.id) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized - Admin access required'
-      });
-    }
-
-    const partner = await Partner.findById(req.params.id)
-      .populate('clientsReferred', 'name email createdAt source orders')
-      .populate({
-        path: 'ordersReferred',
-        select: 'plan finalPrice originalPrice createdAt status customerDetails.email partnerCommission',
-        options: { sort: { createdAt: -1 } }
-      });
-
-    if (!partner) {
-      return res.status(404).json({
-        success: false,
-        error: 'Partner not found'
-      });
-    }
-
-    // Calculate conversion rate
-    const conversionRate = partner.referralClicks > 0 
-      ? parseFloat(((partner.totalClientsReferred / partner.referralClicks) * 100).toFixed(2))
-      : 0;
-
-    // ========== FIX: MULTIPLY BY 100 ==========
-    const commissionEarned = (partner.commissionEarned || 0) * 100;
-    const commissionPaid = (partner.commissionPaid || 0) * 100;
-    const availableCommission = commissionEarned - commissionPaid;
-    const totalReferralSales = (partner.totalReferralSales || 0) * 100;
-    
-    // Generate proper tracking link
-    const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    const referralLink = partner.referralLink || 
-      `${backendUrl}/api/partner-auth/verify-referral?code=${partner.referralCode}&redirect=${encodeURIComponent(frontendUrl + '/signup')}`;
-
-    res.json({
-      success: true,
-      data: {
-        partner: {
-          id: partner._id,
-          name: partner.name,
-          email: partner.email,
-          referralCode: partner.referralCode,
-          referralLink: referralLink,
-          status: partner.status,
-          commissionEarned: commissionEarned, // 1380 not 13.80
-          commissionPaid: commissionPaid, // 0 not 0
-          availableCommission: availableCommission, // 1380 not 13.80
-          totalClientsReferred: partner.totalClientsReferred || 0,
-          totalOrdersReferred: partner.totalOrdersReferred || 0,
-          referralClicks: partner.referralClicks || 0,
-          conversionRate: conversionRate,
-          totalReferralSales: totalReferralSales,
-          commissionRate: partner.commissionRate || 10,
-          createdAt: partner.createdAt,
-          referredBy: partner.referredBy
-        },
-        clients: partner.clientsReferred || [],
-        orders: partner.ordersReferred || []
-      }
-    });
-
-  } catch (error) {
-    console.error('Partner detail error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch partner details',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
+  res.status(200).json({
+    success: true,
+    message: 'Logged out successfully'
+  });
 };
 
 // Request commission payout
@@ -721,7 +557,7 @@ exports.requestPayout = async (req, res) => {
 
 // ========== ADMIN FUNCTIONS ==========
 
-// Get all partners for admin dashboard
+// Get all partners for admin
 exports.getAllPartners = async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '' } = req.query;
@@ -760,84 +596,84 @@ exports.getAllPartners = async (req, res) => {
   }
 };
 
-// Get detailed partner info for admin
-// exports.getAdminPartnerDetails = async (req, res) => {
-//   try {
-//     if (!req.admin?.id) {
-//       return res.status(401).json({
-//         success: false,
-//         error: 'Unauthorized - Admin access required'
-//       });
-//     }
+// Get detailed partner info for admin - FIXED COMMISSION
+exports.getAdminPartnerDetails = async (req, res) => {
+  try {
+    if (!req.admin?.id) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized - Admin access required'
+      });
+    }
 
-//     const partner = await Partner.findById(req.params.id)
-//       .populate('clientsReferred', 'name email createdAt source orders')
-//       .populate({
-//         path: 'ordersReferred',
-//         select: 'plan finalPrice originalPrice createdAt status customerDetails.email partnerCommission',
-//         options: { sort: { createdAt: -1 } }
-//       });
+    const partner = await Partner.findById(req.params.id)
+      .populate('clientsReferred', 'name email createdAt source orders')
+      .populate({
+        path: 'ordersReferred',
+        select: 'plan finalPrice originalPrice createdAt status customerDetails.email partnerCommission',
+        options: { sort: { createdAt: -1 } }
+      });
 
-//     if (!partner) {
-//       return res.status(404).json({
-//         success: false,
-//         error: 'Partner not found'
-//       });
-//     }
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found'
+      });
+    }
 
-//     // Calculate conversion rate
-//     const conversionRate = (partner.referralClicks || 0) > 0 
-//       ? parseFloat(((partner.totalClientsReferred || 0) / (partner.referralClicks || 1) * 100).toFixed(2))
-//       : 0;
+    const conversionRate = partner.referralClicks > 0 
+      ? parseFloat(((partner.totalClientsReferred / partner.referralClicks) * 100).toFixed(2))
+      : 0;
 
-//     // Ensure commission values are in cents
-//     const commissionEarned = Math.floor(partner.commissionEarned || 0);
-//     const commissionPaid = Math.floor(partner.commissionPaid || 0);
-//     const availableCommission = commissionEarned - commissionPaid;
+    // ========== FIX: MULTIPLY BY 100 ==========
+    const commissionEarned = (partner.commissionEarned || 0) * 100;
+    const commissionPaid = (partner.commissionPaid || 0) * 100;
+    const availableCommission = commissionEarned - commissionPaid;
+    const totalReferralSales = (partner.totalReferralSales || 0) * 100;
     
-//     // Generate proper tracking link
-//     const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
-//     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-//     const referralLink = partner.referralLink || 
-//       `${backendUrl}/api/partner-auth/verify-referral?code=${partner.referralCode}&redirect=${encodeURIComponent(frontendUrl + '/signup')}`;
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const referralLink = partner.referralLink || 
+      `${backendUrl}/api/partner-auth/verify-referral?code=${partner.referralCode}&redirect=${encodeURIComponent(frontendUrl + '/signup')}`;
 
-//     res.json({
-//       success: true,
-//       data: {
-//         partner: {
-//           id: partner._id,
-//           name: partner.name,
-//           email: partner.email,
-//           referralCode: partner.referralCode,
-//           referralLink: referralLink,
-//           status: partner.status,
-//           commissionEarned: commissionEarned,
-//           commissionPaid: commissionPaid,
-//           availableCommission: availableCommission,
-//           totalClientsReferred: partner.totalClientsReferred || 0,
-//           totalOrdersReferred: partner.totalOrdersReferred || 0,
-//           referralClicks: partner.referralClicks || 0,
-//           conversionRate: conversionRate,
-//           totalReferralSales: partner.totalReferralSales || 0,
-//           createdAt: partner.createdAt,
-//           referredBy: partner.referredBy
-//         },
-//         clients: partner.clientsReferred || [],
-//         orders: partner.ordersReferred || []
-//       }
-//     });
+    res.json({
+      success: true,
+      data: {
+        partner: {
+          id: partner._id,
+          name: partner.name,
+          email: partner.email,
+          referralCode: partner.referralCode,
+          referralLink: referralLink,
+          status: partner.status,
+          commissionEarned: commissionEarned, // 1380 not 13.80
+          commissionPaid: commissionPaid, // 0 not 0
+          availableCommission: availableCommission, // 1380 not 13.80
+          totalClientsReferred: partner.totalClientsReferred || 0,
+          totalOrdersReferred: partner.totalOrdersReferred || 0,
+          referralClicks: partner.referralClicks || 0,
+          conversionRate: conversionRate,
+          totalReferralSales: totalReferralSales,
+          commissionRate: partner.commissionRate || 10,
+          createdAt: partner.createdAt,
+          referredBy: partner.referredBy
+        },
+        clients: partner.clientsReferred || [],
+        orders: partner.ordersReferred || []
+      }
+    });
 
-//   } catch (error) {
-//     console.error('Partner detail error:', error);
-//     res.status(500).json({
-//       success: false,
-//       error: 'Failed to fetch partner details',
-//       details: process.env.NODE_ENV === 'development' ? error.message : undefined
-//     });
-//   }
-// };
+  } catch (error) {
+    console.error('Partner detail error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch partner details',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
 
-// Get partner statistics for admin dashboard
+// Get partner statistics
 exports.getPartnerStats = async (req, res) => {
   try {
     const stats = await Partner.aggregate([
@@ -881,7 +717,7 @@ exports.getPartnerStats = async (req, res) => {
   }
 };
 
-// Update partner status (admin only)
+// Update partner status
 exports.updatePartnerStatus = async (req, res) => {
   try {
     const { status } = req.body;
@@ -916,7 +752,7 @@ exports.updatePartnerStatus = async (req, res) => {
   }
 };
 
-// Admin process payout (without Payout model)
+// Admin process payout
 exports.adminProcessPayout = async (req, res) => {
   try {
     const { amount, notes } = req.body;
@@ -929,7 +765,6 @@ exports.adminProcessPayout = async (req, res) => {
       });
     }
 
-    // Convert Euros to cents for database
     const amountInCents = Math.round(amount * 100);
     const availableCommissionInCents = (partner.commissionEarned || 0) - (partner.commissionPaid || 0);
     
@@ -940,11 +775,9 @@ exports.adminProcessPayout = async (req, res) => {
       });
     }
 
-    // Update partner commission (in cents)
     partner.commissionPaid += amountInCents;
     await partner.save();
 
-    // Send email notification
     await sendEmail({
       to: partner.email,
       subject: `Payout Processed by Admin`,
@@ -956,9 +789,9 @@ exports.adminProcessPayout = async (req, res) => {
       message: `Payout of €${amount.toFixed(2)} processed successfully`,
       partner: {
         ...partner.toObject(),
-        commissionEarned: partner.commissionEarned / 100, // Convert to Euros
-        commissionPaid: partner.commissionPaid / 100, // Convert to Euros
-        availableCommission: (partner.commissionEarned - partner.commissionPaid) / 100 // Convert to Euros
+        commissionEarned: partner.commissionEarned / 100,
+        commissionPaid: partner.commissionPaid / 100,
+        availableCommission: (partner.commissionEarned - partner.commissionPaid) / 100
       }
     });
   } catch (error) {
@@ -969,7 +802,46 @@ exports.adminProcessPayout = async (req, res) => {
   }
 };
 
-// Debug endpoint to check partner clicks
+// Test click tracking
+exports.testClickTracking = async (req, res) => {
+  try {
+    const { code } = req.params;
+    
+    console.log(`🧪 Test click for code: ${code}`);
+    
+    const partner = await Partner.findOne({ referralCode: code });
+    
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found',
+        code
+      });
+    }
+    
+    partner.referralClicks = (partner.referralClicks || 0) + 1;
+    await partner.save();
+    
+    res.json({
+      success: true,
+      message: `Test click counted for ${partner.email}`,
+      totalClicks: partner.referralClicks,
+      partner: {
+        name: partner.name,
+        email: partner.email,
+        referralCode: partner.referralCode,
+        status: partner.status
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+};
+
+// Debug endpoint
 exports.debugPartnerClicks = async (req, res) => {
   try {
     const { code } = req.params;
