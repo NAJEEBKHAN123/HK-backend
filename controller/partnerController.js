@@ -28,8 +28,10 @@ exports.trackClick = async (req, res) => {
 
     if (!partner) {
       console.log('❌ Partner not found or inactive:', code);
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-      // ✅ REDIRECT TO /signup
+      // ✅ FIXED: Use production URL when in production
+      const frontendUrl = process.env.NODE_ENV === 'production' 
+        ? process.env.FRONTEND_URL_PROD || 'https://ouvrir-societe-hong-kong.fr'
+        : process.env.FRONTEND_URL || 'http://localhost:5173';
       return res.redirect(`${frontendUrl}/signup`);
     }
 
@@ -83,8 +85,11 @@ exports.trackClick = async (req, res) => {
     });
     
     // ========== REDIRECT TO SIGNUP ==========
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    // ✅ IMPORTANT: Redirect to /signup?ref=CODE
+    // ✅ FIXED: Use production URL when in production
+    const frontendUrl = process.env.NODE_ENV === 'production' 
+      ? process.env.FRONTEND_URL_PROD || 'https://ouvrir-societe-hong-kong.fr'
+      : process.env.FRONTEND_URL || 'http://localhost:5173';
+    
     const redirectUrl = `${frontendUrl}/signup?ref=${code}`;
     
     console.log('🔄 Redirecting to:', redirectUrl);
@@ -98,9 +103,10 @@ exports.trackClick = async (req, res) => {
       code: req.params?.code
     });
     
-    // Still redirect even if tracking fails
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    // ✅ Redirect to /signup
+    // ✅ FIXED: Use production URL when in production
+    const frontendUrl = process.env.NODE_ENV === 'production' 
+      ? process.env.FRONTEND_URL_PROD || 'https://ouvrir-societe-hong-kong.fr'
+      : process.env.FRONTEND_URL || 'http://localhost:5173';
     res.redirect(`${frontendUrl}/signup`);
   }
 };
@@ -628,7 +634,12 @@ exports.registerPartner = async (req, res) => {
     
     // Generate tracking link
     const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    
+    // ✅ FIXED: Use production URL when in production
+    const frontendUrl = process.env.NODE_ENV === 'production' 
+      ? process.env.FRONTEND_URL_PROD || 'https://ouvrir-societe-hong-kong.fr'
+      : process.env.FRONTEND_URL || 'http://localhost:5173';
+    
     const trackingLink = `${backendUrl}/api/partner-auth/track-click/${referralCode}`;
     
     const partner = await Partner.create({
@@ -685,6 +696,7 @@ exports.registerPartner = async (req, res) => {
 };
 
 // Verify referral code - KEPT FOR BACKWARD COMPATIBILITY
+// Verify referral code - KEPT FOR BACKWARD COMPATIBILITY
 exports.verifyReferral = async (req, res) => {
   try {
     const { code, redirect } = req.query;
@@ -699,8 +711,9 @@ exports.verifyReferral = async (req, res) => {
     if (!partner) {
       console.log(`❌ Partner not found or inactive: ${code}`);
       
+      // ✅ FIXED: Use production URL when in production
       const frontendUrl = process.env.NODE_ENV === 'production' 
-        ? 'https://ouvrir-societe-hong-kong.fr'
+        ? process.env.FRONTEND_URL_PROD || 'https://ouvrir-societe-hong-kong.fr'
         : process.env.FRONTEND_URL || 'http://localhost:5173';
         
       return res.redirect(`${frontendUrl}/partner-signup`);
@@ -719,8 +732,9 @@ exports.verifyReferral = async (req, res) => {
       secure: process.env.NODE_ENV === 'production'
     });
     
+    // ✅ FIXED: Use production URL when in production
     const frontendUrl = process.env.NODE_ENV === 'production' 
-      ? 'https://ouvrir-societe-hong-kong.fr'
+      ? process.env.FRONTEND_URL_PROD || 'https://ouvrir-societe-hong-kong.fr'
       : process.env.FRONTEND_URL || 'http://localhost:5173';
       
     const targetUrl = redirect 
@@ -733,8 +747,9 @@ exports.verifyReferral = async (req, res) => {
   } catch (error) {
     console.error('❌ Referral verification error:', error);
     
+    // ✅ FIXED: Use production URL when in production
     const frontendUrl = process.env.NODE_ENV === 'production' 
-      ? 'https://ouvrir-societe-hong-kong.fr'
+      ? process.env.FRONTEND_URL_PROD || 'https://ouvrir-societe-hong-kong.fr'
       : process.env.FRONTEND_URL || 'http://localhost:5173';
       
     res.redirect(`${frontendUrl}/partner-signup`);
