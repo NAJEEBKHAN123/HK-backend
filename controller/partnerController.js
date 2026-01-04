@@ -5,6 +5,283 @@ const { sendEmail } = require('../services/partnerEmailService');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 
+// ========== CLICK TRACKING FUNCTIONS ==========
+
+// Main click tracking endpoint
+exports.trackClick = async (req, res) => {
+  try {
+    const { code } = req.params;
+    
+    console.log('🔗 CLICK TRACKING STARTED:', {
+      code: code,
+      timestamp: new Date().toISOString(),
+      ip: req.ip,
+      userAgent: req.get('User-Agent'),
+      referrer: req.get('Referer')
+    });
+    
+    // Find active partner
+    const partner = await Partner.findOne({ 
+      referralCode: code,
+      status: 'active'
+    });
+
+    if (!partner) {
+      console.log('❌ Partner not found or inactive:', code);
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+      // ✅ REDIRECT TO /signup
+      return res.redirect(`${frontendUrl}/signup`);
+    }
+
+    console.log('✅ Partner found:', {
+      name: partner.name,
+      email: partner.email,
+      currentClicks: partner.referralClicks
+    });
+    
+    // ========== UPDATE CLICKS ==========
+    partner.referralClicks = (partner.referralClicks || 0) + 1;
+    partner.lastClickAt = new Date();
+    partner.lastClickIP = req.ip;
+    
+    // Add to click history if field exists
+    if (partner.clickHistory && Array.isArray(partner.clickHistory)) {
+      partner.clickHistory.push({
+        timestamp: new Date(),
+        ip: req.ip,
+        userAgent: req.get('User-Agent'),
+        referrer: req.get('Referer')
+      });
+      
+      // Keep only last 100 clicks
+      if (partner.clickHistory.length > 100) {
+        partner.clickHistory = partner.clickHistory.slice(-100);
+      }
+    }
+    
+    await partner.save();
+    
+    console.log('✅ Click tracked successfully:', {
+      partner: partner.email,
+      newClicks: partner.referralClicks,
+      updatedAt: partner.updatedAt
+    });
+    
+    // ========== SET COOKIES ==========
+    res.cookie('partner_ref', code, {
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax'
+    });
+    
+    res.cookie('ref_session', code, {
+      maxAge: 2 * 60 * 60 * 1000,
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax'
+    });
+    
+    // ========== REDIRECT TO SIGNUP ==========
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    // ✅ IMPORTANT: Redirect to /signup?ref=CODE
+    const redirectUrl = `${frontendUrl}/signup?ref=${code}`;
+    
+    console.log('🔄 Redirecting to:', redirectUrl);
+    
+    res.redirect(302, redirectUrl);
+    
+  } catch (error) {
+    console.error('❌ Click tracking error:', {
+      error: error.message,
+      stack: error.stack,
+      code: req.params?.code
+    });
+    
+    // Still redirect even if tracking fails
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    // ✅ Redirect to /signup
+    res.redirect(`${frontendUrl}/signup`);
+  }
+};
+
+// Test click endpoint (for admin testing)
+exports.testClickTracking = async (req, res) => {
+  try {
+    const { code } = req.params;
+    
+    console.log(`🧪 Test click for code: ${code}`);
+    
+    const partner = await Partner.findOne({ referralCode: code });
+    
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found',
+        code
+      });
+    }
+    
+    partner.referralClicks = (partner.referralClicks || 0) + 1;
+    partner.lastClickAt = new Date();
+    partner.lastClickIP = '127.0.0.1';
+    
+    await partner.save();
+    
+    res.json({
+      success: true,
+      message: `Test click counted for ${partner.email}`,
+      totalClicks: partner.referralClicks,
+      partner: {
+        name: partner.name,
+        email: partner.email,
+        referralCode: partner.referralCode,
+        status: partner.status
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+};
+
+// Manual click update (admin)
+exports.manualUpdateClicks = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { clicks } = req.body;
+    
+    console.log('🔄 Manual click update:', { partnerId: id, newClicks: clicks });
+    
+    const partner = await Partner.findById(id);
+    
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found'
+      });
+    }
+    
+    const oldClicks = partner.referralClicks || 0;
+    partner.referralClicks = parseInt(clicks);
+    await partner.save();
+    
+    console.log('✅ Manual click update successful:', {
+      partner: partner.email,
+      oldClicks: oldClicks,
+      newClicks: partner.referralClicks
+    });
+    
+    res.json({
+      success: true,
+      message: 'Click count updated manually',
+      data: {
+        partnerId: partner._id,
+        name: partner.name,
+        email: partner.email,
+        oldClicks: oldClicks,
+        newClicks: partner.referralClicks
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Manual click update error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+// Get click stats
+exports.getClickStats = async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const partner = await Partner.findById(id).select('referralClicks clickHistory lastClickAt');
+    
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found'
+      });
+    }
+    
+    // Analyze click history
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const last7Days = new Date();
+    last7Days.setDate(last7Days.getDate() - 7);
+    
+    const clicksToday = partner.clickHistory?.filter(click => 
+      new Date(click.timestamp) >= today
+    ).length || 0;
+    
+    const clicksLast7Days = partner.clickHistory?.filter(click => 
+      new Date(click.timestamp) >= last7Days
+    ).length || 0;
+    
+    res.json({
+      success: true,
+      data: {
+        totalClicks: partner.referralClicks || 0,
+        clicksToday: clicksToday,
+        clicksLast7Days: clicksLast7Days,
+        lastClickAt: partner.lastClickAt,
+        clickHistoryCount: partner.clickHistory?.length || 0,
+        recentClicks: partner.clickHistory?.slice(-10).reverse() || []
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Get click stats error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
+// Debug endpoint
+exports.debugPartnerClicks = async (req, res) => {
+  try {
+    const { code } = req.params;
+    
+    const partner = await Partner.findOne({ referralCode: code });
+    
+    if (!partner) {
+      return res.status(404).json({
+        success: false,
+        error: 'Partner not found',
+        code
+      });
+    }
+    
+    res.json({
+      success: true,
+      partner: {
+        name: partner.name,
+        email: partner.email,
+        referralCode: partner.referralCode,
+        referralClicks: partner.referralClicks || 0,
+        referralLink: partner.referralLink,
+        lastClickAt: partner.lastClickAt,
+        status: partner.status,
+        createdAt: partner.createdAt
+      },
+      modelFields: Object.keys(partner._doc)
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
 // ========== LOGIN FUNCTION ==========
 exports.loginPartner = async (req, res) => {
   try {
@@ -107,7 +384,7 @@ exports.loginPartner = async (req, res) => {
 
 // ========== DASHBOARD FUNCTIONS ==========
 
-// Get partner dashboard data - FIXED COMMISSION DISPLAY
+// Get partner dashboard data - UPDATED
 exports.getPartnerDashboard = async (req, res) => {
   try {
     console.log('📊 Fetching dashboard for partner:', req.partner?._id);
@@ -123,12 +400,12 @@ exports.getPartnerDashboard = async (req, res) => {
       .populate({
         path: 'clientsReferred',
         select: 'name email createdAt source orders',
-        options: { sort: { createdAt: -1 } }
+        options: { sort: { createdAt: -1 }, limit: 10 }
       })
       .populate({
         path: 'ordersReferred',
         select: 'plan finalPrice createdAt status',
-        options: { sort: { createdAt: -1 } }
+        options: { sort: { createdAt: -1 }, limit: 10 }
       });
 
     if (!partner) {
@@ -139,28 +416,15 @@ exports.getPartnerDashboard = async (req, res) => {
     }
 
     // Calculate conversion rate
-    const conversionRate = (partner.referralClicks || 0) > 0 
-      ? (((partner.totalClientsReferred || 0) / partner.referralClicks) * 100).toFixed(2)
+    const conversionRate = partner.referralClicks > 0 
+      ? (((partner.clientsReferred?.length || 0) / partner.referralClicks) * 100).toFixed(2)
       : '0.00';
 
-    // ========== FIX: MULTIPLY BY 100 ==========
-    const commissionEarned = (partner.commissionEarned || 0) * 100; // 13.80 → 1380
-    const commissionPaid = (partner.commissionPaid || 0) * 100; // 0 → 0
-    const availableCommission = commissionEarned - commissionPaid;
-    const totalReferralSales = (partner.totalReferralSales || 0) * 100;
-    
-    // Generate proper tracking link
+    // Generate tracking link
     const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    const referralLink = partner.referralLink || 
-      `${backendUrl}/api/partner-auth/verify-referral?code=${partner.referralCode}&redirect=${encodeURIComponent(frontendUrl + '/signup')}`;
-
-    console.log('💰 Commission values:', {
-      dbEarned: partner.commissionEarned,
-      displayEarned: commissionEarned,
-      dbPaid: partner.commissionPaid,
-      displayPaid: commissionPaid
-    });
+    const referralLink = `${backendUrl}/api/partner-auth/track-click/${partner.referralCode}`;
+    const directLink = `${frontendUrl}/signup?ref=${partner.referralCode}`;
 
     res.json({
       success: true,
@@ -171,16 +435,18 @@ exports.getPartnerDashboard = async (req, res) => {
           email: partner.email,
           referralCode: partner.referralCode,
           referralLink: referralLink,
+          directSignupLink: directLink,
           status: partner.status,
-          commissionEarned: commissionEarned, // Now 1380 not 13.80
-          commissionPaid: commissionPaid, // Now 0 not 0
-          availableCommission: availableCommission, // Now 1380 not 13.80
-          totalClientsReferred: partner.totalClientsReferred || 0,
-          totalOrdersReferred: partner.totalOrdersReferred || 0,
+          commissionEarned: partner.commissionEarned || 0,
+          commissionPaid: partner.commissionPaid || 0,
+          availableCommission: (partner.commissionEarned || 0) - (partner.commissionPaid || 0),
+          totalClientsReferred: partner.clientsReferred?.length || 0,
+          totalOrdersReferred: partner.ordersReferred?.length || 0,
           referralClicks: partner.referralClicks || 0,
           conversionRate: conversionRate,
-          totalReferralSales: totalReferralSales,
-          commissionRate: partner.commissionRate || 10
+          totalReferralSales: partner.totalReferralSales || 0,
+          commissionRate: partner.commissionRate || 10,
+          lastClickAt: partner.lastClickAt
         },
         clients: partner.clientsReferred || [],
         orders: partner.ordersReferred || []
@@ -267,7 +533,8 @@ exports.getCurrentPartner = async (req, res) => {
         name: partner.name,
         email: partner.email,
         referralCode: partner.referralCode,
-        referralClicks: partner.referralClicks || 0
+        referralClicks: partner.referralClicks || 0,
+        lastClickAt: partner.lastClickAt
       }
     });
   } catch (error) {
@@ -322,7 +589,7 @@ exports.generatePartnerCredential = async (req, res) => {
   }
 };
 
-// Register new partner
+// Register new partner - UPDATED WITH TRACKING LINK
 exports.registerPartner = async (req, res) => {
   try {
     const { token, shortCode, email, name, password } = req.body;
@@ -359,9 +626,10 @@ exports.registerPartner = async (req, res) => {
 
     const referralCode = `HKP-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
     
+    // Generate tracking link
     const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    const trackingLink = `${backendUrl}/api/partner-auth/verify-referral?code=${referralCode}&redirect=${encodeURIComponent(frontendUrl + '/signup')}`;
+    const trackingLink = `${backendUrl}/api/partner-auth/track-click/${referralCode}`;
     
     const partner = await Partner.create({
       name,
@@ -370,7 +638,8 @@ exports.registerPartner = async (req, res) => {
       status: 'active',
       referralCode,
       referralLink: trackingLink,
-      referredBy: invite.createdBy
+      referredBy: invite.createdBy,
+      joinedAt: new Date()
     });
 
     await PartnerInvite.findByIdAndUpdate(invite._id, {
@@ -387,6 +656,7 @@ exports.registerPartner = async (req, res) => {
         <p>Your partner account has been successfully created.</p>
         <p>Your unique referral code: <strong>${partner.referralCode}</strong></p>
         <p>Your tracking link: <a href="${partner.referralLink}">${partner.referralLink}</a></p>
+        <p>This link will track clicks and redirect users to signup.</p>
         <p>Start sharing your link to track clicks and earn commissions!</p>
       `
     });
@@ -414,12 +684,12 @@ exports.registerPartner = async (req, res) => {
   }
 };
 
-// Verify referral code
+// Verify referral code - KEPT FOR BACKWARD COMPATIBILITY
 exports.verifyReferral = async (req, res) => {
   try {
     const { code, redirect } = req.query;
     
-    console.log(`🔗 Click tracking for code: ${code}`);
+    console.log(`🔗 Legacy click tracking for code: ${code}`);
     
     const partner = await Partner.findOne({ 
       referralCode: code,
@@ -428,16 +698,20 @@ exports.verifyReferral = async (req, res) => {
 
     if (!partner) {
       console.log(`❌ Partner not found or inactive: ${code}`);
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-      return res.redirect(`${frontendUrl}/signup`);
+      
+      const frontendUrl = process.env.NODE_ENV === 'production' 
+        ? 'https://ouvrir-societe-hong-kong.fr'
+        : process.env.FRONTEND_URL || 'http://localhost:5173';
+        
+      return res.redirect(`${frontendUrl}/partner-signup`);
     }
 
     partner.referralClicks = (partner.referralClicks || 0) + 1;
+    partner.lastClickAt = new Date();
     partner.lastClickIP = req.ip;
-    partner.lastClickDate = new Date();
     await partner.save();
 
-    console.log(`✅ Click tracked: ${partner.email}, Total clicks: ${partner.referralClicks}`);
+    console.log(`✅ Legacy click tracked: ${partner.email}, Total clicks: ${partner.referralClicks}`);
     
     res.cookie('referralCode', code, {
       maxAge: 30 * 24 * 60 * 60 * 1000,
@@ -445,21 +719,27 @@ exports.verifyReferral = async (req, res) => {
       secure: process.env.NODE_ENV === 'production'
     });
     
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const frontendUrl = process.env.NODE_ENV === 'production' 
+      ? 'https://ouvrir-societe-hong-kong.fr'
+      : process.env.FRONTEND_URL || 'http://localhost:5173';
+      
     const targetUrl = redirect 
       ? `${redirect}?ref=${code}` 
-      : `${frontendUrl}/signup?ref=${code}`;
+      : `${frontendUrl}/partner-signup?ref=${code}`;
     
     console.log(`🔄 Redirecting to: ${targetUrl}`);
     res.redirect(targetUrl);
     
   } catch (error) {
     console.error('❌ Referral verification error:', error);
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    res.redirect(`${frontendUrl}/signup`);
+    
+    const frontendUrl = process.env.NODE_ENV === 'production' 
+      ? 'https://ouvrir-societe-hong-kong.fr'
+      : process.env.FRONTEND_URL || 'http://localhost:5173';
+      
+    res.redirect(`${frontendUrl}/partner-signup`);
   }
 };
-
 // Verify partner invite
 exports.verifyInvite = async (req, res) => {
   try {
@@ -519,7 +799,7 @@ exports.requestPayout = async (req, res) => {
       });
     }
 
-    const availableCommission = partner.availableCommission || 0;
+    const availableCommission = (partner.commissionEarned || 0) - (partner.commissionPaid || 0);
     if (availableCommission <= 0) {
       return res.status(400).json({
         success: false,
@@ -573,7 +853,7 @@ exports.getAllPartners = async (req, res) => {
     }
 
     const partners = await Partner.find(query)
-      .select('name email referralCode status createdAt commissionEarned commissionPaid totalClientsReferred referralClicks')
+      .select('name email referralCode status createdAt commissionEarned commissionPaid referralClicks lastClickAt')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
@@ -596,7 +876,7 @@ exports.getAllPartners = async (req, res) => {
   }
 };
 
-// Get detailed partner info for admin - FIXED COMMISSION
+// Get detailed partner info for admin - UPDATED
 exports.getAdminPartnerDetails = async (req, res) => {
   try {
     if (!req.admin?.id) {
@@ -622,19 +902,14 @@ exports.getAdminPartnerDetails = async (req, res) => {
     }
 
     const conversionRate = partner.referralClicks > 0 
-      ? parseFloat(((partner.totalClientsReferred / partner.referralClicks) * 100).toFixed(2))
+      ? parseFloat(((partner.clientsReferred?.length || 0) / partner.referralClicks) * 100).toFixed(2)
       : 0;
 
-    // ========== FIX: MULTIPLY BY 100 ==========
-    const commissionEarned = (partner.commissionEarned || 0) * 100;
-    const commissionPaid = (partner.commissionPaid || 0) * 100;
-    const availableCommission = commissionEarned - commissionPaid;
-    const totalReferralSales = (partner.totalReferralSales || 0) * 100;
-    
+    // Generate both links
     const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    const referralLink = partner.referralLink || 
-      `${backendUrl}/api/partner-auth/verify-referral?code=${partner.referralCode}&redirect=${encodeURIComponent(frontendUrl + '/signup')}`;
+    const referralLink = `${backendUrl}/api/partner-auth/track-click/${partner.referralCode}`;
+    const directLink = `${frontendUrl}/signup?ref=${partner.referralCode}`;
 
     res.json({
       success: true,
@@ -644,22 +919,35 @@ exports.getAdminPartnerDetails = async (req, res) => {
           name: partner.name,
           email: partner.email,
           referralCode: partner.referralCode,
-          referralLink: referralLink,
+          referralLink: referralLink, // Tracking link
+          directSignupLink: directLink, // Direct signup link
           status: partner.status,
-          commissionEarned: commissionEarned, // 1380 not 13.80
-          commissionPaid: commissionPaid, // 0 not 0
-          availableCommission: availableCommission, // 1380 not 13.80
-          totalClientsReferred: partner.totalClientsReferred || 0,
-          totalOrdersReferred: partner.totalOrdersReferred || 0,
+          commissionEarned: partner.commissionEarned || 0,
+          commissionPaid: partner.commissionPaid || 0,
+          availableCommission: (partner.commissionEarned || 0) - (partner.commissionPaid || 0),
+          totalClientsReferred: partner.clientsReferred?.length || 0,
+          totalOrdersReferred: partner.ordersReferred?.length || 0,
           referralClicks: partner.referralClicks || 0,
           conversionRate: conversionRate,
-          totalReferralSales: totalReferralSales,
+          totalReferralSales: partner.totalReferralSales || 0,
           commissionRate: partner.commissionRate || 10,
+          lastClickAt: partner.lastClickAt,
+          lastClickIP: partner.lastClickIP,
           createdAt: partner.createdAt,
           referredBy: partner.referredBy
         },
         clients: partner.clientsReferred || [],
-        orders: partner.ordersReferred || []
+        orders: partner.ordersReferred || [],
+        clickStats: {
+          totalClicks: partner.referralClicks || 0,
+          lastClickAt: partner.lastClickAt,
+          clickHistoryCount: partner.clickHistory?.length || 0,
+          todayClicks: partner.clickHistory?.filter(click => {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            return new Date(click.timestamp) >= today;
+          }).length || 0
+        }
       }
     });
 
@@ -684,7 +972,7 @@ exports.getPartnerStats = async (req, res) => {
           activePartners: { $sum: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] } },
           totalCommission: { $sum: '$commissionEarned' },
           totalPaid: { $sum: '$commissionPaid' },
-          totalClients: { $sum: '$totalClientsReferred' },
+          totalClients: { $sum: { $size: '$clientsReferred' } },
           totalClicks: { $sum: '$referralClicks' }
         }
       },
@@ -700,7 +988,13 @@ exports.getPartnerStats = async (req, res) => {
           totalClients: 1,
           totalClicks: 1,
           avgClientsPerPartner: { $divide: ['$totalClients', '$totalPartners'] },
-          conversionRate: { $multiply: [{ $divide: ['$totalClients', '$totalClicks'] }, 100] }
+          conversionRate: { 
+            $cond: [
+              { $eq: ['$totalClicks', 0] },
+              0,
+              { $multiply: [{ $divide: ['$totalClients', '$totalClicks'] }, 100] }
+            ]
+          }
         }
       }
     ]);
@@ -789,9 +1083,9 @@ exports.adminProcessPayout = async (req, res) => {
       message: `Payout of €${amount.toFixed(2)} processed successfully`,
       partner: {
         ...partner.toObject(),
-        commissionEarned: partner.commissionEarned / 100,
-        commissionPaid: partner.commissionPaid / 100,
-        availableCommission: (partner.commissionEarned - partner.commissionPaid) / 100
+        commissionEarned: partner.commissionEarned,
+        commissionPaid: partner.commissionPaid,
+        availableCommission: partner.commissionEarned - partner.commissionPaid
       }
     });
   } catch (error) {
@@ -802,77 +1096,36 @@ exports.adminProcessPayout = async (req, res) => {
   }
 };
 
-// Test click tracking
-exports.testClickTracking = async (req, res) => {
+// Approve partner
+exports.approvePartner = async (req, res) => {
   try {
-    const { code } = req.params;
-    
-    console.log(`🧪 Test click for code: ${code}`);
-    
-    const partner = await Partner.findOne({ referralCode: code });
-    
-    if (!partner) {
-      return res.status(404).json({
-        success: false,
-        error: 'Partner not found',
-        code
-      });
-    }
-    
-    partner.referralClicks = (partner.referralClicks || 0) + 1;
-    await partner.save();
-    
-    res.json({
-      success: true,
-      message: `Test click counted for ${partner.email}`,
-      totalClicks: partner.referralClicks,
-      partner: {
-        name: partner.name,
-        email: partner.email,
-        referralCode: partner.referralCode,
-        status: partner.status
-      }
+    const partner = await Partner.findByIdAndUpdate(
+      req.params.id,
+      { 
+        status: 'active',
+        joinedAt: new Date() 
+      },
+      { new: true }
+    );
+
+    await sendEmail({
+      to: partner.email,
+      subject: 'Partner Account Approved',
+      html: `
+        <h2>Welcome to Our Partner Program</h2>
+        <p>Your referral code: <strong>${partner.referralCode}</strong></p>
+        <p>Your tracking link: <a href="${partner.referralLink}">${partner.referralLink}</a></p>
+        <p>Dashboard: ${process.env.FRONTEND_URL}/partner</p>
+      `
     });
+
+    res.json({ success: true, partner });
+
   } catch (error) {
     res.status(500).json({ 
       success: false,
-      error: error.message 
-    });
-  }
-};
-
-// Debug endpoint
-exports.debugPartnerClicks = async (req, res) => {
-  try {
-    const { code } = req.params;
-    
-    const partner = await Partner.findOne({ referralCode: code });
-    
-    if (!partner) {
-      return res.status(404).json({
-        success: false,
-        error: 'Partner not found',
-        code
-      });
-    }
-    
-    res.json({
-      success: true,
-      partner: {
-        name: partner.name,
-        email: partner.email,
-        referralCode: partner.referralCode,
-        referralClicks: partner.referralClicks || 0,
-        referralLink: partner.referralLink,
-        status: partner.status,
-        createdAt: partner.createdAt
-      },
-      modelFields: Object.keys(partner._doc)
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
+      error: 'Approval failed',
+      details: error.message
     });
   }
 };

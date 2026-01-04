@@ -3,12 +3,13 @@ const Partner = require('../model/Partner');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const Order = require('../model/Order');
 const EmailService = require('../services/emailService');
-const crypto = require('crypto'); // ADD THIS
+const crypto = require('crypto');
 
+// ========== PRICING IN EUROS ==========
 const PRICING = {
-  STARTER: 3900,
-  SMART: 4600,
-  PREMIUM: 9800
+  STARTER: 3900,   // €3,900
+  SMART: 4600,     // €4,600
+  PREMIUM: 9800    // €9,800
 };
 const COMMISSION_RATE = 0.10; // 10%
 
@@ -21,7 +22,7 @@ const handleErrorResponse = (res, error, action) => {
   });
 };
 
-// ============ UPDATED CREATE ORDER FUNCTION ============
+// ============ CREATE ORDER FUNCTION ============
 exports.createOrder = async (req, res) => {
   try {
     console.log('🔍 Order creation started:', {
@@ -63,7 +64,6 @@ exports.createOrder = async (req, res) => {
     if (!client) {
       console.log('👤 Client not found, creating new client...');
       
-      // Generate temporary password
       const tempPassword = crypto.randomBytes(8).toString('hex');
       
       client = await Client.create({
@@ -71,15 +71,15 @@ exports.createOrder = async (req, res) => {
         email: clientEmail,
         password: tempPassword,
         phone: customerDetails.phone || '',
-        source: 'DIRECT', // Will update if referral
+        source: 'DIRECT',
         orders: [],
         status: 'active'
       });
       
       isNewClient = true;
-      console.log(`✅ New client created: ${client.email} (ID: ${client._id})`);
+      console.log(`✅ New client created: ${client.email}`);
     } else {
-      console.log(`✅ Existing client found: ${client.email} (ID: ${client._id})`);
+      console.log(`✅ Existing client found: ${client.email}`);
     }
 
     // ================== 2. HANDLE REFERRAL CODE ==================
@@ -92,10 +92,8 @@ exports.createOrder = async (req, res) => {
       });
 
       if (partner) {
-        console.log(`✅ Found partner: ${partner.name} (ID: ${partner._id})`);
+        console.log(`✅ Found partner: ${partner.name}`);
         
-        // ========== FIX: UPDATE CLIENT REFERRAL INFO ==========
-        // Only update if client is not already linked to a partner
         if (!client.referredBy || client.referredBy.toString() !== partner._id.toString()) {
           console.log(`🔗 Linking client to partner...`);
           
@@ -106,8 +104,6 @@ exports.createOrder = async (req, res) => {
           
           console.log(`✅ Client updated with referral info`);
           
-          // ========== FIX: ADD CLIENT TO PARTNER'S REFERRED CLIENTS ==========
-          // Check if client already in partner's list
           const partnerDoc = await Partner.findById(partner._id);
           const isClientAlreadyInList = partnerDoc.clientsReferred.some(
             clientId => clientId.toString() === client._id.toString()
@@ -119,11 +115,7 @@ exports.createOrder = async (req, res) => {
               $inc: { totalClientsReferred: 1 }
             });
             console.log(`✅ Client added to partner's clientsReferred list`);
-          } else {
-            console.log(`ℹ️ Client already in partner's referred list`);
           }
-        } else {
-          console.log(`ℹ️ Client already linked to this partner`);
         }
       } else {
         console.log(`❌ No active partner found for referral code: "${referralCode.trim()}"`);
@@ -145,13 +137,13 @@ exports.createOrder = async (req, res) => {
         idFrontImage: customerDetails.idFrontImage,
         idBackImage: customerDetails.idBackImage
       },
-      originalPrice: PRICING[plan],
+      originalPrice: PRICING[plan], // In euros: 3900 = €3,900
       finalPrice: PRICING[plan],
       status: 'pending',
-      source: 'DIRECT', // Default
+      source: 'DIRECT',
       referralSource: referralSource,
       clientStatus: clientStatus,
-      client: client._id, // LINK ORDER TO CLIENT
+      client: client._id,
       isNewClient: isNewClient
     };
 
@@ -162,10 +154,11 @@ exports.createOrder = async (req, res) => {
       orderData.referralCode = referralCode.trim();
       orderData.referralPartnerName = partner.name;
       orderData.clientStatus = 'REFERRED';
-      orderData.partnerCommission = Math.floor(PRICING[plan] * COMMISSION_RATE);
+      orderData.partnerCommission = PRICING[plan] * COMMISSION_RATE; // Calculate 10%
       orderData.finalPrice = PRICING[plan] - orderData.partnerCommission;
       
-      console.log(`💰 Commission calculated: €${orderData.partnerCommission/100} for partner ${partner.name}`);
+      console.log(`💰 Commission calculated: €${orderData.partnerCommission} for partner ${partner.name}`);
+      console.log(`💰 ${PRICING[plan]} × 10% = €${orderData.partnerCommission}`);
     }
 
     // ================== 5. CREATE ORDER ==================
@@ -176,7 +169,6 @@ exports.createOrder = async (req, res) => {
     await Client.findByIdAndUpdate(client._id, {
       $push: { orders: order._id }
     });
-    console.log(`✅ Order ${order._id} linked to client ${client.email}`);
 
     // ================== 7. UPDATE PARTNER WITH ORDER ==================
     if (partner) {
@@ -185,21 +177,23 @@ exports.createOrder = async (req, res) => {
         $inc: { 
           totalOrdersReferred: 1,
           totalReferralSales: order.originalPrice,
-          commissionEarned: order.partnerCommission
+          commissionEarned: order.partnerCommission,
+          availableCommission: order.partnerCommission
         }
       });
-      console.log(`✅ Order ${order._id} added to partner ${partner.name}'s ordersReferred`);
+      console.log(`💰 Partner commission updated: +€${order.partnerCommission}`);
     }
 
     // ================== 8. SEND EMAILS ==================
     try {
       await EmailService.sendOrderConfirmation(order);
-      console.log('📧 Order confirmation email sent');
     } catch (emailError) {
       console.error('❌ Email sending failed:', emailError.message);
     }
 
     // ================== 9. CREATE STRIPE SESSION ==================
+    const stripeAmountInCents = Math.round(order.originalPrice * 100);
+    
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
@@ -209,7 +203,7 @@ exports.createOrder = async (req, res) => {
             name: `${plan} Plan`,
             description: 'Company formation package'
           },
-          unit_amount: order.originalPrice,
+          unit_amount: stripeAmountInCents,
         },
         quantity: 1,
       }],
@@ -228,18 +222,7 @@ exports.createOrder = async (req, res) => {
     order.stripeSessionId = session.id;
     await order.save();
 
-    // ================== 10. LOG SUCCESS ==================
-    console.log('🎉 Order creation completed:', {
-      orderId: order._id,
-      clientId: client._id,
-      clientEmail: client.email,
-      isNewClient: isNewClient,
-      partner: partner ? partner.name : 'None',
-      commission: order.partnerCommission || 0,
-      clientInPartnerList: partner ? 'Yes' : 'No'
-    });
-
-    // ================== 11. RETURN RESPONSE ==================
+    // ================== 10. RETURN RESPONSE ==================
     res.json({
       success: true,
       url: session.url,
@@ -249,70 +232,15 @@ exports.createOrder = async (req, res) => {
       currency: 'eur',
       clientStatus: order.clientStatus,
       referralStatus: order.source === 'REFERRAL' ? 'referred' : 'direct',
+      partnerCommission: order.partnerCommission || 0,
       message: partner 
-        ? `Client ${client.email} linked to partner ${partner.name}` 
-        : `Client ${client.email} created successfully`
+        ? `Client linked to partner ${partner.name}. Commission: €${order.partnerCommission}` 
+        : `Client created successfully`
     });
 
   } catch (error) {
-    console.error('❌ CRITICAL Order creation error:', {
-      error: error.message,
-      stack: error.stack,
-      body: req.body
-    });
+    console.error('❌ Order creation error:', error);
     handleErrorResponse(res, error, 'create order');
-  }
-};
-
-// ============ ADD TEST ENDPOINT ============
-exports.testClientLink = async (req, res) => {
-  try {
-    const { email } = req.query;
-    
-    const client = await Client.findOne({ email: email.toLowerCase() })
-      .populate('referredBy', 'name email referralCode')
-      .populate('orders', 'plan createdAt status');
-    
-    if (!client) {
-      return res.json({
-        exists: false,
-        message: 'Client not found'
-      });
-    }
-
-    // Find partners who have this client in their referred list
-    const partners = await Partner.find({ 
-      clientsReferred: client._id 
-    }).select('name email referralCode totalClientsReferred');
-    
-    // Find orders for this client
-    const orders = await Order.find({ 
-      'customerDetails.email': email.toLowerCase() 
-    }).select('plan createdAt status referredBy');
-
-    res.json({
-      client: {
-        id: client._id,
-        name: client.name,
-        email: client.email,
-        source: client.source,
-        referredBy: client.referredBy,
-        referralCode: client.referralCode,
-        orders: client.orders,
-        createdAt: client.createdAt
-      },
-      linkedToPartners: partners,
-      allOrders: orders,
-      summary: {
-        clientExists: true,
-        isReferred: !!client.referredBy,
-        totalOrders: orders.length,
-        linkedPartnersCount: partners.length,
-        clientInPartnerList: partners.length > 0 ? 'YES' : 'NO'
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
 };
 
@@ -347,7 +275,7 @@ exports.handleStripeWebhook = async (req, res) => {
       ).populate('referredBy');
 
       if (order) {
-        console.log(`Order ${order._id} marked as completed via webhook`);
+        console.log(`Order ${order._id} marked as completed`);
         
         try {
           await EmailService.sendPaymentSuccess(order);
@@ -361,45 +289,25 @@ exports.handleStripeWebhook = async (req, res) => {
           !order.isCommissionProcessed) {
         
         if (order.partnerCommission === 0) {
-          order.partnerCommission = Math.floor(order.originalPrice * COMMISSION_RATE);
+          order.partnerCommission = order.originalPrice * COMMISSION_RATE;
           order.finalPrice = order.originalPrice - order.partnerCommission;
         }
 
         try {
-          if (order.referredBy.stripeAccountId) {
-            await stripe.transfers.create({
-              amount: order.partnerCommission,
-              currency: 'eur',
-              destination: order.referredBy.stripeAccountId,
-              description: `Commission for order ${order._id}`
-            });
-
-            await Partner.findByIdAndUpdate(order.referredBy._id, {
-              $inc: {
-                commissionEarned: order.partnerCommission,
-                commissionPaid: order.partnerCommission,
-                totalReferralSales: order.originalPrice
-              },
-              $addToSet: {
-                ordersReferred: order._id
-              }
-            });
-          } else {
-            await Partner.findByIdAndUpdate(order.referredBy._id, {
-              $inc: {
-                commissionEarned: order.partnerCommission,
-                totalReferralSales: order.originalPrice
-              },
-              $addToSet: {
-                ordersReferred: order._id
-              }
-            });
-          }
+          await Partner.findByIdAndUpdate(order.referredBy._id, {
+            $inc: {
+              commissionEarned: order.partnerCommission,
+              totalReferralSales: order.originalPrice
+            },
+            $addToSet: {
+              ordersReferred: order._id
+            }
+          });
 
           order.isCommissionProcessed = true;
           await order.save();
           
-          console.log(`Commission processed for partner ${order.referredBy.name}: €${order.partnerCommission/100}`);
+          console.log(`Commission processed for partner ${order.referredBy.name}: €${order.partnerCommission}`);
         } catch (transferErr) {
           console.error('Commission processing failed:', transferErr);
           order.isCommissionProcessed = true;
@@ -414,7 +322,6 @@ exports.handleStripeWebhook = async (req, res) => {
   res.json({ received: true });
 };
 
-// Get all orders (admin)
 exports.getAllOrders = async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '', clientType, source } = req.query;
@@ -422,7 +329,6 @@ exports.getAllOrders = async (req, res) => {
 
     const query = {};
     
-    // Search filter
     if (search) {
       query.$or = [
         { 'customerDetails.fullName': { $regex: search, $options: 'i' } },
@@ -433,7 +339,6 @@ exports.getAllOrders = async (req, res) => {
       ];
     }
     
-    // Client type filter
     if (clientType && clientType !== 'ALL') {
       if (clientType === 'REFERRED') {
         query.source = 'REFERRAL';
@@ -442,7 +347,6 @@ exports.getAllOrders = async (req, res) => {
       }
     }
     
-    // Source filter
     if (source && source !== 'ALL') {
       query.referralSource = source;
     }
@@ -473,7 +377,6 @@ exports.getAllOrders = async (req, res) => {
   }
 };
 
-// Get single order
 exports.getOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
@@ -498,7 +401,6 @@ exports.getOrder = async (req, res) => {
   }
 };
 
-// Cancel order
 exports.cancelOrder = async (req, res) => {
   try {
     const order = await Order.findByIdAndUpdate(
@@ -518,7 +420,6 @@ exports.cancelOrder = async (req, res) => {
       });
     }
 
-    // If order was completed and had commission, reverse it
     if (order.status === 'completed' && order.referredBy && order.partnerCommission > 0) {
       await Partner.findByIdAndUpdate(order.referredBy._id, {
         $inc: { 
@@ -583,7 +484,6 @@ exports.updateOrder = async (req, res) => {
     const { status, paymentMethod, transactionReference, adminNotes } = req.body;
     const orderId = req.params.id;
 
-    // Convert status to lowercase and validate
     const normalizedStatus = status.toLowerCase();
     if (!['pending', 'processing', 'completed', 'failed', 'cancelled'].includes(normalizedStatus)) {
       return res.status(400).json({
@@ -592,7 +492,6 @@ exports.updateOrder = async (req, res) => {
       });
     }
 
-    // Validate input
     if (normalizedStatus === 'completed' && (!paymentMethod || !transactionReference)) {
       return res.status(400).json({
         success: false,
@@ -627,7 +526,6 @@ exports.updateOrder = async (req, res) => {
       });
     }
 
-    // Handle commission updates
     if (order.status === 'completed' && order.referredBy && order.partnerCommission > 0 && !order.isCommissionProcessed) {
       await Partner.findByIdAndUpdate(order.referredBy._id, {
         $inc: { 
@@ -641,7 +539,6 @@ exports.updateOrder = async (req, res) => {
       await order.save();
     }
 
-    // Handle commission reversal for cancelled orders
     if (order.status === 'cancelled' && order.referredBy && order.partnerCommission > 0 && order.isCommissionProcessed) {
       await Partner.findByIdAndUpdate(order.referredBy._id, {
         $inc: { 
@@ -671,7 +568,6 @@ exports.updateOrder = async (req, res) => {
   }
 };
 
-// Get order statistics
 exports.getOrderStats = async (req, res) => {
   try {
     const totalOrders = await Order.countDocuments();

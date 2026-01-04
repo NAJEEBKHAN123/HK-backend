@@ -2,6 +2,7 @@ const Client = require("../model/Client");
 const Partner = require("../model/Partner");
 const jwt = require("jsonwebtoken");
 const validator = require("validator");
+const Order = require("../model/Order");
 
 exports.clientSignup = async (req, res) => {
   try {
@@ -59,22 +60,22 @@ exports.clientSignup = async (req, res) => {
         clientData.source = "REFERRAL";
         clientData.referredBy = partner._id;
         clientData.referralCode = referralCode;
-
-        // Track referral click
-        await Partner.findByIdAndUpdate(partner._id, {
-          $inc: { referralClicks: 1 },
-        });
+        
+        // ✅ NO CLICK COUNTING HERE - Clicks are already counted in trackClick()
+        // Clicks should ONLY be counted when someone clicks the link, not when they sign up
       }
     }
 
     // Create client
     const client = await Client.create(clientData);
 
-    // Update partner if referral
+    // Update partner if referral (add client to partner's referred clients)
     if (client.source === "REFERRAL") {
       await Partner.findByIdAndUpdate(client.referredBy, {
         $addToSet: { clientsReferred: client._id },
       });
+      
+      console.log(`✅ Client ${email} added to partner's referred clients`);
     }
 
     // Create JWT
@@ -156,8 +157,7 @@ exports.clientLogin = async (req, res) => {
   }
 };
 
-// get all client
-
+// Get all clients
 exports.getAllClients = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -205,14 +205,14 @@ exports.getAllClients = async (req, res) => {
   }
 };
 
-
-
+// ✅ UPDATED: Now includes orders with detailed calculations
 exports.getClientForPartner = async (req, res) => {
   try {
     const client = await Client.findOne({
       _id: req.params.id,
       referredBy: req.partner._id // Ensure partner only sees their referred clients
-    }).populate('referredBy', 'name email');
+    })
+    .populate('referredBy', 'name email');
 
     if (!client) {
       return res.status(404).json({
@@ -221,11 +221,50 @@ exports.getClientForPartner = async (req, res) => {
       });
     }
 
+    // ✅ IMPORTANT: Fetch orders for this client that were referred by this partner
+    const orders = await Order.find({ 
+      client: req.params.id,
+      referredBy: req.partner._id
+    })
+    .select('-stripeSessionId -paymentIntentId -isCommissionProcessed -__v')
+    .sort({ createdAt: -1 });
+
+    // ✅ Calculate detailed statistics
+    const totalOrders = orders.length;
+    const totalSpend = orders.reduce((sum, order) => {
+      return sum + (order.finalPrice || order.originalPrice || 0);
+    }, 0);
+    
+    const totalCommission = orders.reduce((sum, order) => {
+      return sum + (order.partnerCommission || 0);
+    }, 0);
+    
+    const averageOrder = totalOrders > 0 ? totalSpend / totalOrders : 0;
+
+    // Prepare client data with orders and statistics
+    const clientData = {
+      ...client.toObject(),
+      orders: orders,
+      totalOrders,
+      totalSpend,
+      totalCommission,
+      averageOrder
+    };
+
+    console.log('✅ Client details for partner fetched:', {
+      clientId: req.params.id,
+      partnerId: req.partner._id,
+      totalOrders,
+      totalSpend,
+      totalCommission
+    });
+
     res.status(200).json({
       success: true,
-      data: client
+      data: clientData
     });
   } catch (error) {
+    console.error('❌ Error in getClientForPartner:', error);
     res.status(500).json({
       success: false,
       error: "Server error"
@@ -233,34 +272,48 @@ exports.getClientForPartner = async (req, res) => {
   }
 };
 
-
-
 exports.getClient = async (req, res) => {
   const id = req.params.id;
   try {
     const client = await Client.findById(id)
-    .populate('referredBy', 'name email')
-
+      .populate('referredBy', 'name email');
+    
     if (!client) {
-      return res.status(404).json({ // Add return here
+      return res.status(404).json({
         success: false,
         message: "Client not found",
       });
     }
-    return res.status(200).json({ // Add return here
+    
+    // Also fetch orders for this client
+    const orders = await Order.find({ client: id })
+      .select('-stripeSessionId -paymentIntentId -isCommissionProcessed -__v')
+      .sort({ createdAt: -1 });
+    
+    const totalSpend = orders.reduce((total, order) => {
+      return total + (order.finalPrice || order.originalPrice || 0);
+    }, 0);
+    
+    return res.status(200).json({
       success: true,
       message: "Client fetched successfully",
-      data: client,
+      data: {
+        ...client.toObject(),
+        orders: orders,
+        totalOrders: orders.length,
+        totalSpend: totalSpend
+      },
     });
   } catch (error) {
     console.error("Error in fetching client:", error);
-    return res.status(500).json({ // Add return here
+    return res.status(500).json({
       success: false,
       message: "Error in fetching client",
       error: error.message
     });
   }
 };
+
 exports.deleteClient = async (req, res) => {
   const id = req.params.id;
   try {
@@ -323,6 +376,116 @@ exports.updateClientStatus = async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Failed to update client status"
+    });
+  }
+};
+
+exports.getClientOrders = async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // First verify the client exists
+    const client = await Client.findById(id);
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: "Client not found",
+      });
+    }
+    
+    // Find all orders for this client
+    const orders = await Order.find({ client: id })
+      .select('-stripeSessionId -paymentIntentId -isCommissionProcessed -__v')
+      .populate('referredBy', 'name email')
+      .sort({ createdAt: -1 });
+    
+    // Calculate total spend (in cents)
+    const totalSpend = orders.reduce((total, order) => {
+      return total + (order.finalPrice || order.originalPrice || 0);
+    }, 0);
+    
+    // Calculate total commission
+    const totalCommission = orders.reduce((total, order) => {
+      return total + (order.partnerCommission || 0);
+    }, 0);
+    
+    return res.status(200).json({
+      success: true,
+      message: "Client orders fetched successfully",
+      data: orders,
+      count: orders.length,
+      totalSpend: totalSpend,
+      totalCommission: totalCommission,
+      totalSpendDisplay: `$${(totalSpend / 100).toFixed(2)}`
+    });
+  } catch (error) {
+    console.error("Error fetching client orders:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error fetching client orders",
+      error: error.message
+    });
+  }
+};
+
+// ✅ NEW: Get detailed client information for partner with orders
+exports.getClientDetailsForPartner = async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // First verify the client exists and was referred by this partner
+    const client = await Client.findOne({
+      _id: id,
+      referredBy: req.partner._id
+    }).populate('referredBy', 'name email');
+
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        error: "Client not found or not referred by you"
+      });
+    }
+
+    // Find all orders for this client that were referred by this partner
+    const orders = await Order.find({ 
+      client: id,
+      referredBy: req.partner._id
+    })
+    .select('-stripeSessionId -paymentIntentId -isCommissionProcessed -__v')
+    .sort({ createdAt: -1 });
+    
+    // Calculate total spend (in cents)
+    const totalSpend = orders.reduce((total, order) => {
+      return total + (order.finalPrice || order.originalPrice || 0);
+    }, 0);
+    
+    // Calculate total commission
+    const totalCommission = orders.reduce((total, order) => {
+      return total + (order.partnerCommission || 0);
+    }, 0);
+    
+    // Calculate average order
+    const averageOrder = orders.length > 0 ? totalSpend / orders.length : 0;
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...client.toObject(),
+        orders: orders,
+        totalOrders: orders.length,
+        totalSpend: totalSpend,
+        totalCommission: totalCommission,
+        averageOrder: averageOrder,
+        totalSpendDisplay: `€${(totalSpend / 100).toFixed(2)}`,
+        totalCommissionDisplay: `€${(totalCommission / 100).toFixed(2)}`,
+        averageOrderDisplay: `€${(averageOrder / 100).toFixed(2)}`
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching client details for partner:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Error fetching client details"
     });
   }
 };

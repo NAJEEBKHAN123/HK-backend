@@ -84,7 +84,6 @@ const orderSchema = new mongoose.Schema({
     ref: 'Partner'
   },
   referralCode: String,
-  // New fields for enhanced tracking
   referralSource: {
     type: String,
     enum: ['DIRECT', 'PARTNER_REFERRAL', 'AFFILIATE', 'SOCIAL_MEDIA', 'OTHER'],
@@ -98,7 +97,9 @@ const orderSchema = new mongoose.Schema({
   },
   client: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Client'
+    ref: 'Client',
+    required: true,
+
   },
   stripeSessionId: String,
   paymentIntentId: String,
@@ -112,19 +113,9 @@ const orderSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  commissionProcessedAt: Date
 }, {
-  timestamps: true,
-  toJSON: { 
-    virtuals: true,
-    transform: function(doc, ret) {
-      // Keep referral fields for display
-      delete ret.stripeSessionId;
-      delete ret.paymentIntentId;
-      delete ret.isCommissionProcessed;
-      delete ret.__v;
-      return ret;
-    }
-  }
+  timestamps: true
 });
 
 // Virtual for displaying referral status
@@ -142,46 +133,58 @@ orderSchema.virtual('clientStatusDisplay').get(function() {
   return 'New Client';
 });
 
-// Calculate final price and commission
-orderSchema.pre('save', function(next) {
-  if (this.source === 'REFERRAL' && this.isModified('status') && this.status === 'completed') {
-    // Calculate commission based on partner's rate (default 10%)
-    this.partnerCommission = this.originalPrice * 0.10;
-    this.finalPrice = this.originalPrice - this.partnerCommission;
-  } else if (this.source === 'DIRECT') {
-    this.finalPrice = this.originalPrice;
-    this.partnerCommission = 0;
+// Calculate final price and commission before saving
+orderSchema.pre('save', async function(next) {
+  if (this.source === 'REFERRAL' && this.referredBy && !this.isCommissionProcessed) {
+    const Partner = mongoose.model('Partner');
+    const partner = await Partner.findById(this.referredBy);
+    
+    if (partner) {
+      const commissionRate = partner.commissionRate || 10;
+      this.partnerCommission = this.originalPrice * (commissionRate / 100);
+      this.finalPrice = this.originalPrice;
+    }
   }
   next();
 });
 
-// Update partner stats after order completion
+// Process commission after order is completed
 orderSchema.post('save', async function(doc) {
-  if (doc.source === 'REFERRAL' && doc.status === 'completed' && !doc.isCommissionProcessed) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
+  if (doc.status === 'completed' && 
+      doc.source === 'REFERRAL' && 
+      !doc.isCommissionProcessed &&
+      doc.referredBy) {
     
     try {
-      const partner = await mongoose.model('Partner').findById(doc.referredBy).session(session);
-      if (partner) {
-        // Update partner stats
-        partner.ordersReferred.push(doc._id);
-        partner.commissionEarned += doc.partnerCommission;
-        partner.availableCommission += doc.partnerCommission;
-        partner.totalReferralSales += doc.originalPrice;
-        await partner.save({ session });
-        
-        // Mark order as processed
-        doc.isCommissionProcessed = true;
-        await doc.save({ session });
+      const Partner = mongoose.model('Partner');
+      const partner = await Partner.findById(doc.referredBy);
+      
+      if (!partner) {
+        return;
       }
       
-      await session.commitTransaction();
+      await partner.addCommission(
+        doc.originalPrice,
+        doc._id,
+        `Commission from ${doc.plan} plan order`
+      );
+      
+      if (doc.client && !partner.clientsReferred.includes(doc.client)) {
+        partner.clientsReferred.push(doc.client);
+      }
+      
+      if (!partner.ordersReferred.includes(doc._id)) {
+        partner.ordersReferred.push(doc._id);
+      }
+      
+      await partner.save();
+      
+      doc.isCommissionProcessed = true;
+      doc.commissionProcessedAt = new Date();
+      await doc.save();
+      
     } catch (error) {
-      await session.abortTransaction();
-      console.error('Error updating partner stats:', error);
-    } finally {
-      session.endSession();
+      console.error(`Error processing commission:`, error);
     }
   }
 });

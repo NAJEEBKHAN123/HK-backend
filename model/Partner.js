@@ -1,43 +1,38 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
 
 const partnerSchema = new mongoose.Schema({
-  name: { 
-    type: String, 
-    required: [true, 'Name is required'],
+  name: {
+    type: String,
+    required: [true, 'Please provide a name'],
     trim: true
   },
   email: {
     type: String,
-    required: [true, 'Email is required'],
+    required: [true, 'Please provide an email'],
     unique: true,
     lowercase: true,
-    match: [/\S+@\S+\.\S+/, 'Please use a valid email address']
+    match: [/^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/, 'Please provide a valid email']
   },
   password: {
     type: String,
-    required: [true, 'Password is required'],
-    minlength: [8, 'Password must be at least 8 characters'],
+    required: [true, 'Please provide a password'],
+    minlength: 6,
     select: false
   },
   referralCode: {
     type: String,
     unique: true,
-    required: true,
-    default: () => `HKP-${crypto.randomBytes(3).toString('hex').toUpperCase()}`
+    uppercase: true
   },
+  referralLink: String,
   status: {
     type: String,
-    enum: ['pending', 'active', 'suspended'],
-    default: 'active'
+    enum: ['pending', 'active', 'suspended', 'inactive'],
+    default: 'pending'
   },
-  commissionRate: {
-    type: Number,
-    default: 10,
-    min: 0,
-    max: 100
-  },
+  
+  // Commission Fields (stored in EUROS)
   commissionEarned: {
     type: Number,
     default: 0
@@ -46,14 +41,38 @@ const partnerSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  commissionOnHold: {
+    type: Number,
+    default: 0
+  },
   availableCommission: {
     type: Number,
     default: 0
   },
-  stripeAccountId: {
-    type: String,
-    select: false
+  commissionRate: {
+    type: Number,
+    default: 10 // 10%
   },
+  totalReferralSales: {
+    type: Number,
+    default: 0
+  },
+  
+  // Click Tracking
+  referralClicks: {
+    type: Number,
+    default: 0
+  },
+  lastClickAt: Date,
+  lastClickIP: String,
+  clickHistory: [{
+    timestamp: Date,
+    ip: String,
+    userAgent: String,
+    referrer: String
+  }],
+  
+  // Relationships
   clientsReferred: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Client'
@@ -62,116 +81,320 @@ const partnerSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order'
   }],
-  referralClicks: {
-    type: Number,
-    default: 0
-  },
-  totalReferralSales: {
-    type: Number,
-    default: 0
-  },
   referredBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Partner'
-  }
-  
-},{ 
-  timestamps: true,
-  toJSON: { 
-    virtuals: true,
-    getters: true,
-    transform: function(doc, ret) {
-      delete ret.password;
-      delete ret.stripeAccountId;
-      delete ret.__v;
-      return ret;
-    }
   },
-  toObject: { 
-    virtuals: true,
-    getters: true 
-  }
-});
-
-// Virtual Properties
-partnerSchema.virtual('referralLink').get(function() {
-  const frontendUrl = process.env.NODE_ENV === 'production' 
-    ? process.env.FRONTEND_URL_PROD 
-    : process.env.FRONTEND_URL;
-  return `${frontendUrl}/signup?ref=${this.referralCode}`;
-});
-
-partnerSchema.virtual('totalClientsReferred').get(function() {
-  if (Array.isArray(this.clientsReferred)) {
-    return this.clientsReferred.length;
-  }
-  return 0;
-});
-
-partnerSchema.virtual('totalOrdersReferred').get(function() {
-  return this.ordersReferred?.length || 0;
-});
-
-
-partnerSchema.virtual('conversionRate').get(function() {
-  if (!this.referralClicks || this.referralClicks === 0) return 0;
-  const clientsReferred = this.totalClientsReferred;
-  const rate = (clientsReferred / this.referralClicks) * 100;
-  return parseFloat(rate.toFixed(2));
-});
-
-// Middleware
-partnerSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) return next();
   
-  try {
-    const salt = await bcrypt.genSalt(12);
-    this.password = await bcrypt.hash(this.password, salt);
-    next();
-  } catch (err) {
-    next(err);
-  }
+  // Metadata
+  joinedAt: Date,
+  lastLoginAt: Date,
+  passwordResetToken: String,
+  passwordResetExpires: Date,
+  
+  // Settings
+  paymentMethod: {
+    type: String,
+    enum: ['bank_transfer', 'paypal', 'stripe', null],
+    default: null
+  },
+  paymentDetails: mongoose.Schema.Types.Mixed,
+  
+}, {
+  timestamps: true
 });
 
+// Virtual for withdrawable commission
+partnerSchema.virtual('withdrawableCommission').get(function() {
+  const available = this.availableCommission || 0;
+  const onHold = this.commissionOnHold || 0;
+  return Math.max(0, available - onHold);
+});
 
-// Method to compare passwords
+// Virtual for conversion rate
+partnerSchema.virtual('conversionRate').get(function() {
+  if (this.referralClicks === 0) return '0.00';
+  const rate = ((this.clientsReferred?.length || 0) / this.referralClicks * 100);
+  return rate.toFixed(2);
+});
+
+// ========== METHODS ==========
+
 partnerSchema.methods.comparePassword = async function(candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
-// Method to update referral stats
-partnerSchema.methods.updateReferralStats = async function(order) {
+partnerSchema.pre('save', async function(next) {
+  if (!this.isModified('password')) return next();
+  
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
+  next();
+});
+
+partnerSchema.pre('save', async function(next) {
+  if (!this.referralCode) {
+    const crypto = require('crypto');
+    this.referralCode = `HKP-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+  }
+  
+  if (!this.referralLink && this.referralCode) {
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
+    this.referralLink = `${backendUrl}/api/partner-auth/track-click/${this.referralCode}`;
+  }
+  
+  next();
+});
+
+// ========== COMMISSION METHODS ==========
+
+partnerSchema.methods.getCommissionSummary = function() {
+  const earned = this.commissionEarned || 0;
+  const paid = this.commissionPaid || 0;
+  const onHold = this.commissionOnHold || 0;
+  const available = this.availableCommission || 0;
+  const withdrawable = Math.max(0, available - onHold);
+  
+  return {
+    earned: earned,
+    paid: paid,
+    onHold: onHold,
+    available: available,
+    withdrawable: withdrawable,
+    pendingPayout: available > 0 ? available : 0
+  };
+};
+
+partnerSchema.methods.addCommission = async function(orderAmount, orderId, description = 'Commission from order') {
   const session = await mongoose.startSession();
   session.startTransaction();
   
   try {
-    this.ordersReferred.push(order._id);
-    this.commissionEarned += order.partnerCommission;
-    this.availableCommission += order.partnerCommission;
-    this.totalReferralSales += order.finalPrice;
+    const commissionRate = this.commissionRate || 10;
+    const commissionAmount = orderAmount * (commissionRate / 100);
+    
+    this.commissionEarned += commissionAmount;
+    this.availableCommission += commissionAmount;
+    this.totalReferralSales += orderAmount;
     
     await this.save({ session });
+    
+    const CommissionTransaction = mongoose.model('CommissionTransaction');
+    await CommissionTransaction.create([{
+      partner: this._id,
+      referenceOrder: orderId,
+      amount: commissionAmount,
+      type: 'EARNED',
+      status: 'COMPLETED',
+      description: description,
+      balanceBefore: this.commissionEarned - commissionAmount,
+      balanceAfter: this.commissionEarned,
+      metadata: {
+        orderAmount: orderAmount,
+        commissionRate: commissionRate
+      }
+    }], { session });
+    
     await session.commitTransaction();
     
-    return this;
+    console.log(`✅ Commission added: €${commissionAmount} to partner ${this.email}`);
+    
+    return {
+      success: true,
+      commissionAmount: commissionAmount,
+      newBalance: this.commissionEarned,
+      transactionId: this._id
+    };
+    
   } catch (error) {
     await session.abortTransaction();
+    console.error('❌ Commission add error:', error);
     throw error;
   } finally {
     session.endSession();
   }
 };
 
-// Static method to find by referral code
-partnerSchema.statics.findByReferralCode = function(code) {
-  return this.findOne({ referralCode: code, status: 'active' });
+partnerSchema.methods.processPayout = async function(
+  amount, 
+  processedById, 
+  paymentMethod = 'BANK_TRANSFER',
+  transactionId = '',
+  adminNotes = ''
+) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const available = this.availableCommission || 0;
+    const onHold = this.commissionOnHold || 0;
+    const withdrawable = Math.max(0, available - onHold);
+    
+    console.log('💰 Payout request:', {
+      requested: amount,
+      available: available,
+      onHold: onHold,
+      withdrawable: withdrawable
+    });
+    
+    if (amount > withdrawable) {
+      throw new Error(
+        `Insufficient commission. Available: €${available}, On Hold: €${onHold}, Withdrawable: €${withdrawable}, Requested: €${amount}`
+      );
+    }
+    
+    if (amount <= 0) {
+      throw new Error('Invalid payout amount');
+    }
+    
+    this.commissionPaid += amount;
+    this.availableCommission -= amount;
+    
+    await this.save({ session });
+    
+    const CommissionTransaction = mongoose.model('CommissionTransaction');
+    const transaction = await CommissionTransaction.create([{
+      partner: this._id,
+      amount: amount,
+      type: 'PAID_OUT',
+      status: 'COMPLETED',
+      paymentMethod: paymentMethod,
+      transactionId: transactionId,
+      description: `Payout via ${paymentMethod} - ${adminNotes || 'No notes'}`,
+      processedBy: processedById,
+      adminNotes: adminNotes,
+      balanceBefore: this.commissionEarned,
+      balanceAfter: this.commissionEarned,
+      availableBefore: available,
+      availableAfter: this.availableCommission
+    }], { session });
+    
+    await session.commitTransaction();
+    
+    console.log(`✅ Payout processed: €${amount} for partner ${this.email}`);
+    
+    return {
+      success: true,
+      transaction: transaction[0],
+      newBalance: this.availableCommission,
+      paidOut: amount
+    };
+    
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ Payout error:', error);
+    throw error;
+  } finally {
+    session.endSession();
+  }
 };
 
-// Indexes for better performance
-partnerSchema.index({ email: 1 }, { unique: true });
-partnerSchema.index({ referralCode: 1 }, { unique: true });
-partnerSchema.index({ status: 1 });
-partnerSchema.index({ referredBy: 1 });
+partnerSchema.methods.adjustCommission = async function(
+  amount,
+  type,
+  reason,
+  processedById,
+  referenceOrderId = null,
+  adminNotes = ''
+) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    let description = '';
+    let balanceBefore = this.commissionEarned;
+    let availableBefore = this.availableCommission;
+    let onHoldBefore = this.commissionOnHold || 0;
+    
+    console.log(`🔧 Commission adjustment:`, {
+      type: type,
+      amount: amount,
+      reason: reason,
+      balanceBefore: balanceBefore,
+      availableBefore: availableBefore,
+      onHoldBefore: onHoldBefore
+    });
+    
+    switch(type) {
+      case 'ADD':
+      case 'BONUS':
+        this.commissionEarned += amount;
+        this.availableCommission += amount;
+        description = `${type === 'BONUS' ? 'Bonus' : 'Adjustment added'}: ${reason}`;
+        break;
+        
+      case 'DEDUCT':
+        if (amount > this.availableCommission) {
+          throw new Error(`Cannot deduct more than available commission`);
+        }
+        this.commissionEarned -= amount;
+        this.availableCommission -= amount;
+        description = `Deduction: ${reason}`;
+        break;
+        
+      case 'HOLD':
+        if (amount > this.availableCommission) {
+          throw new Error(`Cannot hold more than available commission`);
+        }
+        this.commissionOnHold = (this.commissionOnHold || 0) + amount;
+        description = `Commission held: ${reason}`;
+        break;
+        
+      case 'RELEASE_HOLD':
+        if (amount > (this.commissionOnHold || 0)) {
+          throw new Error(`Cannot release more than held commission`);
+        }
+        this.commissionOnHold = Math.max(0, (this.commissionOnHold || 0) - amount);
+        description = `Hold released: ${reason}`;
+        break;
+        
+      default:
+        throw new Error(`Invalid adjustment type: ${type}`);
+    }
+    
+    await this.save({ session });
+    
+    const CommissionTransaction = mongoose.model('CommissionTransaction');
+    const transaction = await CommissionTransaction.create([{
+      partner: this._id,
+      referenceOrder: referenceOrderId,
+      amount: amount,
+      type: type,
+      status: 'COMPLETED',
+      description: description,
+      processedBy: processedById,
+      adminNotes: adminNotes,
+      balanceBefore: balanceBefore,
+      balanceAfter: this.commissionEarned,
+      availableBefore: availableBefore,
+      availableAfter: this.availableCommission,
+      onHoldBefore: onHoldBefore,
+      onHoldAfter: this.commissionOnHold,
+      metadata: {
+        reason: reason,
+        adjustmentType: type
+      }
+    }], { session });
+    
+    await session.commitTransaction();
+    
+    console.log(`✅ Commission adjustment successful: ${type} €${amount}`);
+    
+    return {
+      success: true,
+      transaction: transaction[0],
+      newBalance: this.commissionEarned,
+      available: this.availableCommission,
+      onHold: this.commissionOnHold
+    };
+    
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('❌ Adjustment error:', error);
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
 
-const Partner = mongoose.model('Partner', partnerSchema);
-module.exports = Partner; 
+module.exports = mongoose.model('Partner', partnerSchema);

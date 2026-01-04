@@ -1,7 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const DBConnection = require("./db");
+const { connectDB } = require("./db"); // ✅ Correct import
 
 const bookingRouter = require("./routes/booking");
 const contactRouter = require("./routes/contact.route");
@@ -11,6 +11,7 @@ const paymentRoutes = require("./routes/paymentRoutes");
 const partnerAuthRoutes = require("./routes/partnerAuth");
 const partnerAdminRoutes = require("./routes/admin");
 const clientRoutes = require("./routes/clientRoute");
+const commissionRoutes = require('./routes/commissionRoutes');
 
 
 const app = express();
@@ -32,10 +33,10 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// DB connection - wrap in try-catch
+// ✅ Correct DB connection
 (async () => {
   try {
-    await DBConnection();
+    await connectDB(); // ✅ Call the actual function
     console.log("✅ Database connected successfully");
   } catch (error) {
     console.error("❌ Database connection failed:", error.message);
@@ -52,11 +53,14 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/partner-auth", partnerAuthRoutes);
 app.use("/api/partner-admin", partnerAdminRoutes);
 app.use("/api/client", clientRoutes);
+app.use('/api/commission', commissionRoutes);
 
 // Health check
 app.get("/api/health", (req, res) => {
+  const dbStatus = mongoose.connection.readyState === 1 ? "connected" : "disconnected";
   res.status(200).json({
     status: "healthy",
+    database: dbStatus,
     timestamp: new Date().toISOString(),
   });
 });
@@ -72,7 +76,7 @@ app.get("/", (req, res) => {
 // Global error handler
 app.use((err, req, res, next) => {
   console.error(`[${new Date().toISOString()}] Error:`, err.message);
-  console.error(err.stack); // ✅ Log full stack trace
+  console.error(err.stack);
   res.status(500).json({
     success: false,
     message: process.env.NODE_ENV === "development" ? err.message : "Internal Server Error",
