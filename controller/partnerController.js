@@ -391,7 +391,6 @@ exports.loginPartner = async (req, res) => {
 // ========== DASHBOARD FUNCTIONS ==========
 
 // Get partner dashboard data - UPDATED
-// Get partner dashboard data - UPDATED
 exports.getPartnerDashboard = async (req, res) => {
   try {
     console.log('📊 Fetching dashboard for partner:', req.partner?._id);
@@ -427,16 +426,9 @@ exports.getPartnerDashboard = async (req, res) => {
       ? (((partner.clientsReferred?.length || 0) / partner.referralClicks) * 100).toFixed(2)
       : '0.00';
 
-    // ✅ FIXED: Use production backend URL when in production
-    const backendUrl = process.env.NODE_ENV === 'production'
-      ? 'https://hk-backend-tau.vercel.app'  // Production backend
-      : process.env.BACKEND_URL || 'http://localhost:3000';
-    
-    // ✅ FIXED: Use production frontend URL when in production
-    const frontendUrl = process.env.NODE_ENV === 'production'
-      ? process.env.FRONTEND_URL_PROD || 'https://ouvrir-societe-hong-kong.fr'
-      : process.env.FRONTEND_URL || 'http://localhost:5173';
-    
+    // Generate tracking link
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
     const referralLink = `${backendUrl}/api/partner-auth/track-click/${partner.referralCode}`;
     const directLink = `${frontendUrl}/signup?ref=${partner.referralCode}`;
 
@@ -604,7 +596,6 @@ exports.generatePartnerCredential = async (req, res) => {
 };
 
 // Register new partner - UPDATED WITH TRACKING LINK
-// Register new partner - UPDATED WITH TRACKING LINK
 exports.registerPartner = async (req, res) => {
   try {
     const { token, shortCode, email, name, password } = req.body;
@@ -641,13 +632,11 @@ exports.registerPartner = async (req, res) => {
 
     const referralCode = `HKP-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
     
-    // ✅ FIXED: Use production backend URL when in production
-    const backendUrl = process.env.NODE_ENV === 'production'
-      ? 'https://hk-backend-tau.vercel.app'  // Production backend
-      : process.env.BACKEND_URL || 'http://localhost:3000';
+    // Generate tracking link
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
     
-    // ✅ FIXED: Use production frontend URL when in production
-    const frontendUrl = process.env.NODE_ENV === 'production'
+    // ✅ FIXED: Use production URL when in production
+    const frontendUrl = process.env.NODE_ENV === 'production' 
       ? process.env.FRONTEND_URL_PROD || 'https://ouvrir-societe-hong-kong.fr'
       : process.env.FRONTEND_URL || 'http://localhost:5173';
     
@@ -903,7 +892,6 @@ exports.getAllPartners = async (req, res) => {
 };
 
 // Get detailed partner info for admin - UPDATED
-// Get detailed partner info for admin - UPDATED
 exports.getAdminPartnerDetails = async (req, res) => {
   try {
     if (!req.admin?.id) {
@@ -932,16 +920,9 @@ exports.getAdminPartnerDetails = async (req, res) => {
       ? parseFloat(((partner.clientsReferred?.length || 0) / partner.referralClicks) * 100).toFixed(2)
       : 0;
 
-    // ✅ FIXED: Use production backend URL when in production
-    const backendUrl = process.env.NODE_ENV === 'production'
-      ? 'https://hk-backend-tau.vercel.app'  // Production backend
-      : process.env.BACKEND_URL || 'http://localhost:3000'; // Development
-    
-    // ✅ FIXED: Use production frontend URL when in production  
-    const frontendUrl = process.env.NODE_ENV === 'production'
-      ? process.env.FRONTEND_URL_PROD || 'https://ouvrir-societe-hong-kong.fr'
-      : process.env.FRONTEND_URL || 'http://localhost:5173';
-    
+    // Generate both links
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
     const referralLink = `${backendUrl}/api/partner-auth/track-click/${partner.referralCode}`;
     const directLink = `${frontendUrl}/signup?ref=${partner.referralCode}`;
 
