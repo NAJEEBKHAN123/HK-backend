@@ -6,154 +6,65 @@ const commissionTransactionSchema = new mongoose.Schema({
     ref: 'Partner',
     required: true
   },
-  
-  referenceOrder: {
+  order: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order'
   },
-  
   amount: {
-    type: Number,
+    type: Number, // In cents
     required: true,
-    get: v => parseFloat(v.toFixed(2)),
-    set: v => parseFloat(v.toFixed(2))
+    min: 0
   },
-  
   type: {
     type: String,
-    enum: ['EARNED', 'PAID_OUT', 'HOLD', 'HOLD_RELEASED', 'ADJUSTED', 'BONUS', 'DEDUCTED', 'ADDED'],
+    enum: ['EARNED', 'PAID_OUT', 'ADJUSTED', 'HOLD', 'HOLD_RELEASED', 'BONUS'],
     required: true
   },
-  
   status: {
     type: String,
-    enum: ['PENDING', 'COMPLETED', 'FAILED', 'CANCELLED', 'REFUNDED'],
-    default: 'COMPLETED'
+    enum: ['PENDING', 'COMPLETED', 'FAILED', 'ON_HOLD', 'CANCELLED'],
+    default: 'PENDING'
   },
-  
-  paymentMethod: {
-    type: String,
-    enum: ['BANK_TRANSFER', 'PAYPAL', 'STRIPE', 'CASH', 'OTHER', null],
-    default: null
-  },
-  
-  transactionId: String,
-  
   description: {
     type: String,
     required: true
   },
-  
-  processedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
-  },
-  
   adminNotes: String,
-  
-  balanceBefore: {
-    type: Number,
-    get: v => parseFloat(v.toFixed(2)),
-    set: v => parseFloat(v.toFixed(2))
+  paymentMethod: {
+    type: String,
+    enum: ['BANK_TRANSFER', 'PAYPAL', 'STRIPE_CONNECT', 'CASH', 'OTHER']
   },
-  
-  balanceAfter: {
-    type: Number,
-    get: v => parseFloat(v.toFixed(2)),
-    set: v => parseFloat(v.toFixed(2))
+  transactionId: String, // External payment reference
+  balanceBefore: Number,
+  balanceAfter: Number,
+  metadata: mongoose.Schema.Types.Mixed,
+  createdAt: {
+    type: Date,
+    default: Date.now
   },
-  
-  availableBefore: {
-    type: Number,
-    get: v => parseFloat(v.toFixed(2)),
-    set: v => parseFloat(v.toFixed(2))
-  },
-  
-  availableAfter: {
-    type: Number,
-    get: v => parseFloat(v.toFixed(2)),
-    set: v => parseFloat(v.toFixed(2))
-  },
-  
-  onHoldBefore: {
-    type: Number,
-    default: 0,
-    get: v => parseFloat(v.toFixed(2)),
-    set: v => parseFloat(v.toFixed(2))
-  },
-  
-  onHoldAfter: {
-    type: Number,
-    default: 0,
-    get: v => parseFloat(v.toFixed(2)),
-    set: v => parseFloat(v.toFixed(2))
-  },
-  
-  metadata: {
-    type: mongoose.Schema.Types.Mixed,
-    default: {}
-  },
-  
-  referenceNumber: String,
-  
-  paymentDate: Date,
-  
-  bankDetails: {
-    accountName: String,
-    accountNumber: String,
-    bankName: String,
-    iban: String,
-    swiftCode: String
-  },
-  
-  proofOfPayment: String,
-  
-  notes: String
-  
+  updatedAt: {
+    type: Date,
+    default: Date.now
+  }
 }, {
-  timestamps: true,
-  toJSON: { getters: true, virtuals: true },
-  toObject: { getters: true, virtuals: true }
+  timestamps: true
 });
 
-// Generate reference number before saving
-commissionTransactionSchema.pre('save', function(next) {
-  if (!this.referenceNumber) {
-    const crypto = require('crypto');
-    this.referenceNumber = `CTX-${crypto.randomBytes(4).toString('hex').toUpperCase()}-${Date.now().toString().slice(-6)}`;
-  }
-  
-  if (this.type === 'PAID_OUT' && this.status === 'COMPLETED' && !this.paymentDate) {
-    this.paymentDate = new Date();
-  }
-  
-  next();
-});
-
-// Virtual for formatted amount
-commissionTransactionSchema.virtual('amountFormatted').get(function() {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'EUR',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(this.amount);
-});
-
-// Virtual for formatted balance
-commissionTransactionSchema.virtual('balanceAfterFormatted').get(function() {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'EUR',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(this.balanceAfter);
-});
-
-// Index for better query performance
+// Indexes for faster queries
 commissionTransactionSchema.index({ partner: 1, createdAt: -1 });
-commissionTransactionSchema.index({ type: 1, status: 1 });
-commissionTransactionSchema.index({ referenceNumber: 1 }, { unique: true });
+commissionTransactionSchema.index({ order: 1 });
+commissionTransactionSchema.index({ status: 1 });
+commissionTransactionSchema.index({ type: 1 });
+
+// Virtual for amount in euros
+commissionTransactionSchema.virtual('amountEuros').get(function() {
+  return this.amount / 100;
+});
+
+// Virtual for display
+commissionTransactionSchema.virtual('displayAmount').get(function() {
+  return `€${(this.amount / 100).toFixed(2)}`;
+});
 
 const CommissionTransaction = mongoose.model('CommissionTransaction', commissionTransactionSchema);
 

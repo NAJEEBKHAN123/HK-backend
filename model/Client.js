@@ -26,23 +26,31 @@ const clientSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
-  referredBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Partner'
-  },
-  source: {
+  
+  // 🔥 CLIENT TYPE
+  clientType: {
     type: String,
     enum: ['DIRECT', 'REFERRAL'],
     default: 'DIRECT'
   },
+  
+  // If referred, track partner
+  referredBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Partner'
+  },
   referralCode: String,
-  orders: [{  // CHANGED TO ARRAY FOR MULTIPLE ORDERS
+  
+  // Orders
+  orders: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order'
   }],
+  
+  // Status
   status: {
     type: String,
-    enum: ['active', 'inactive', 'pending'],
+    enum: ['active', 'inactive'],
     default: 'active'
   }
 }, {
@@ -51,7 +59,7 @@ const clientSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
-// Hash password before save
+// Hash password
 clientSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
   const salt = await bcrypt.genSalt(12);

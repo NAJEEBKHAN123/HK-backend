@@ -392,47 +392,93 @@ exports.loginPartner = async (req, res) => {
 
 // Get partner dashboard data - UPDATED
 // Get partner dashboard data - UPDATED
+// In partnerController.js - Fixed getPartnerDashboard
 exports.getPartnerDashboard = async (req, res) => {
   try {
-    console.log('📊 Fetching dashboard for partner:', req.partner?._id);
+    console.log('📊 Fetching dashboard for partner ID:', req.user?.id || req.partner?.id);
+    console.log('🔍 Request user object:', req.user);
+    console.log('🔍 Request partner object:', req.partner);
     
-    if (!req.partner?.id) {
+    // Get partner ID from either req.user.id or req.partner.id
+    const partnerId = req.user?.id || req.partner?.id;
+    
+    if (!partnerId) {
+      console.error('❌ No partner ID found in request');
       return res.status(401).json({
         success: false,
         error: 'Unauthorized - No partner ID found'
       });
     }
 
-    const partner = await Partner.findById(req.partner.id)
-      .populate({
-        path: 'clientsReferred',
-        select: 'name email createdAt source orders',
-        options: { sort: { createdAt: -1 }, limit: 10 }
-      })
-      .populate({
-        path: 'ordersReferred',
-        select: 'plan finalPrice createdAt status',
-        options: { sort: { createdAt: -1 }, limit: 10 }
-      });
+    // Find the partner
+    const partner = await Partner.findById(partnerId)
+      .select('-password') // Exclude password
+      .lean(); // Convert to plain JavaScript object
 
     if (!partner) {
+      console.error('❌ Partner not found for ID:', partnerId);
       return res.status(404).json({
         success: false,
         error: 'Partner not found'
       });
     }
 
+    console.log('✅ Found partner:', {
+      id: partner._id,
+      name: partner.name,
+      email: partner.email
+    });
+
+    // Get referred clients (if this relationship exists)
+    let referredClients = [];
+    try {
+      // Check different possible field names
+      referredClients = await Client.find({ 
+        $or: [
+          { referredBy: partnerId },
+          { partnerCode: partner.referralCode },
+          { referralCode: partner.referralCode }
+        ]
+      })
+      .select('firstName lastName email phone createdAt status')
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+      
+      console.log(`✅ Found ${referredClients.length} referred clients`);
+    } catch (clientError) {
+      console.log('⚠️ Could not fetch referred clients:', clientError.message);
+    }
+
+    // Get commissions (if this relationship exists)
+    let commissions = [];
+    try {
+      const Commission = require('../model/Commission'); // Adjust path as needed
+      commissions = await Commission.find({ 
+        partner: partnerId 
+      })
+      .select('amount status createdAt client')
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+      
+      console.log(`✅ Found ${commissions.length} commissions`);
+    } catch (commissionError) {
+      console.log('⚠️ Could not fetch commissions:', commissionError.message);
+    }
+
     // Calculate conversion rate
-    const conversionRate = partner.referralClicks > 0 
-      ? (((partner.clientsReferred?.length || 0) / partner.referralClicks) * 100).toFixed(2)
+    const totalClicks = partner.referralClicks || 0;
+    const totalClients = referredClients.length;
+    const conversionRate = totalClicks > 0 
+      ? ((totalClients / totalClicks) * 100).toFixed(2)
       : '0.00';
 
-    // ✅ FIXED: Use production backend URL when in production
+    // Build URLs
     const backendUrl = process.env.NODE_ENV === 'production'
-      ? 'https://hk-backend-tau.vercel.app'  // Production backend
+      ? 'https://hk-backend-tau.vercel.app'
       : process.env.BACKEND_URL || 'http://localhost:3000';
     
-    // ✅ FIXED: Use production frontend URL when in production
     const frontendUrl = process.env.NODE_ENV === 'production'
       ? process.env.FRONTEND_URL_PROD || 'https://ouvrir-societe-hong-kong.fr'
       : process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -440,38 +486,57 @@ exports.getPartnerDashboard = async (req, res) => {
     const referralLink = `${backendUrl}/api/partner-auth/track-click/${partner.referralCode}`;
     const directLink = `${frontendUrl}/signup?ref=${partner.referralCode}`;
 
-    res.json({
+    // Prepare response
+    const responseData = {
       success: true,
       data: {
         partner: {
           id: partner._id,
           name: partner.name,
           email: partner.email,
-          referralCode: partner.referralCode,
+          referralCode: partner.referralCode || 'N/A',
           referralLink: referralLink,
           directSignupLink: directLink,
-          status: partner.status,
+          status: partner.status || 'active',
           commissionEarned: partner.commissionEarned || 0,
           commissionPaid: partner.commissionPaid || 0,
           availableCommission: (partner.commissionEarned || 0) - (partner.commissionPaid || 0),
-          totalClientsReferred: partner.clientsReferred?.length || 0,
-          totalOrdersReferred: partner.ordersReferred?.length || 0,
           referralClicks: partner.referralClicks || 0,
           conversionRate: conversionRate,
-          totalReferralSales: partner.totalReferralSales || 0,
           commissionRate: partner.commissionRate || 10,
-          lastClickAt: partner.lastClickAt
+          lastClickAt: partner.lastClickAt,
+          createdAt: partner.createdAt
         },
-        clients: partner.clientsReferred || [],
-        orders: partner.ordersReferred || []
+        stats: {
+          totalClients: totalClients,
+          totalClicks: totalClicks,
+          conversionRate: conversionRate,
+          totalCommissions: commissions.length,
+          totalCommissionAmount: commissions.reduce((sum, c) => sum + (c.amount || 0), 0)
+        },
+        clients: referredClients,
+        commissions: commissions
       }
+    };
+
+    console.log('✅ Dashboard response prepared:', {
+      partnerName: partner.name,
+      totalClients: totalClients,
+      totalClicks: totalClicks
     });
 
+    res.json(responseData);
+
   } catch (error) {
-    console.error('Dashboard error:', error);
+    console.error('❌ Dashboard error details:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
+
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch partner data',
+      error: 'Failed to fetch dashboard data',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
@@ -903,23 +968,28 @@ exports.getAllPartners = async (req, res) => {
 };
 
 // Get detailed partner info for admin - UPDATED
-// Get detailed partner info for admin - UPDATED
+// In partnerController.js - SIMPLE WORKING VERSION
 exports.getAdminPartnerDetails = async (req, res) => {
   try {
-    if (!req.admin?.id) {
-      return res.status(401).json({
+    console.log('🔄 ADMIN: Starting getAdminPartnerDetails');
+    console.log('📦 Request params:', req.params);
+    console.log('🔐 Admin info:', {
+      adminId: req.admin?._id,
+      adminEmail: req.admin?.email
+    });
+
+    // Validate partner ID
+    if (!req.params.id) {
+      return res.status(400).json({
         success: false,
-        error: 'Unauthorized - Admin access required'
+        error: 'Partner ID is required'
       });
     }
 
+    // Find the partner
     const partner = await Partner.findById(req.params.id)
-      .populate('clientsReferred', 'name email createdAt source orders')
-      .populate({
-        path: 'ordersReferred',
-        select: 'plan finalPrice originalPrice createdAt status customerDetails.email partnerCommission',
-        options: { sort: { createdAt: -1 } }
-      });
+      .select('-password') // Exclude password
+      .lean(); // Convert to plain object
 
     if (!partner) {
       return res.status(404).json({
@@ -928,68 +998,59 @@ exports.getAdminPartnerDetails = async (req, res) => {
       });
     }
 
-    const conversionRate = partner.referralClicks > 0 
-      ? parseFloat(((partner.clientsReferred?.length || 0) / partner.referralClicks) * 100).toFixed(2)
-      : 0;
+    console.log('✅ Found partner:', {
+      id: partner._id,
+      name: partner.name,
+      email: partner.email
+    });
 
-    // ✅ FIXED: Use production backend URL when in production
-    const backendUrl = process.env.NODE_ENV === 'production'
-      ? 'https://hk-backend-tau.vercel.app'  // Production backend
-      : process.env.BACKEND_URL || 'http://localhost:3000'; // Development
-    
-    // ✅ FIXED: Use production frontend URL when in production  
-    const frontendUrl = process.env.NODE_ENV === 'production'
-      ? process.env.FRONTEND_URL_PROD || 'https://ouvrir-societe-hong-kong.fr'
-      : process.env.FRONTEND_URL || 'http://localhost:5173';
-    
-    const referralLink = `${backendUrl}/api/partner-auth/track-click/${partner.referralCode}`;
-    const directLink = `${frontendUrl}/signup?ref=${partner.referralCode}`;
+    // SIMPLE RESPONSE - just partner data for now
+    const responseData = {
+      partner: {
+        id: partner._id,
+        name: partner.name,
+        email: partner.email,
+        referralCode: partner.referralCode || 'N/A',
+        status: partner.status || 'active',
+        referralClicks: partner.referralClicks || 0,
+        commissionEarned: partner.commissionEarned || 0,
+        commissionPaid: partner.commissionPaid || 0,
+        availableCommission: (partner.commissionEarned || 0) - (partner.commissionPaid || 0),
+        commissionOnHold: partner.commissionOnHold || 0,
+        commissionRate: partner.commissionRate || 10,
+        createdAt: partner.createdAt,
+        lastClickAt: partner.lastClickAt,
+        // Add referral link
+        referralLink: `${process.env.BACKEND_URL || 'http://localhost:3000'}/api/partner-auth/track-click/${partner.referralCode}`
+      },
+      clients: [], // Empty for now
+      orders: []   // Empty for now
+    };
 
+    console.log('✅ Sending response');
     res.json({
       success: true,
-      data: {
-        partner: {
-          id: partner._id,
-          name: partner.name,
-          email: partner.email,
-          referralCode: partner.referralCode,
-          referralLink: referralLink, // Tracking link
-          directSignupLink: directLink, // Direct signup link
-          status: partner.status,
-          commissionEarned: partner.commissionEarned || 0,
-          commissionPaid: partner.commissionPaid || 0,
-          availableCommission: (partner.commissionEarned || 0) - (partner.commissionPaid || 0),
-          totalClientsReferred: partner.clientsReferred?.length || 0,
-          totalOrdersReferred: partner.ordersReferred?.length || 0,
-          referralClicks: partner.referralClicks || 0,
-          conversionRate: conversionRate,
-          totalReferralSales: partner.totalReferralSales || 0,
-          commissionRate: partner.commissionRate || 10,
-          lastClickAt: partner.lastClickAt,
-          lastClickIP: partner.lastClickIP,
-          createdAt: partner.createdAt,
-          referredBy: partner.referredBy
-        },
-        clients: partner.clientsReferred || [],
-        orders: partner.ordersReferred || [],
-        clickStats: {
-          totalClicks: partner.referralClicks || 0,
-          lastClickAt: partner.lastClickAt,
-          clickHistoryCount: partner.clickHistory?.length || 0,
-          todayClicks: partner.clickHistory?.filter(click => {
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            return new Date(click.timestamp) >= today;
-          }).length || 0
-        }
-      }
+      data: responseData
     });
 
   } catch (error) {
-    console.error('Partner detail error:', error);
+    console.error('❌ ERROR in getAdminPartnerDetails:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
+
+    // Check for specific errors
+    if (error.name === 'CastError') {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid partner ID format'
+      });
+    }
+
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch partner details',
+      error: 'Internal server error',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
