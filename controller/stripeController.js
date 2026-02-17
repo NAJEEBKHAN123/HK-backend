@@ -1,6 +1,7 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const Partner = require('../model/Partner');
 
+
 // Create Stripe Connect account for partner
 exports.createConnectAccount = async (req, res) => {
   try {

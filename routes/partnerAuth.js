@@ -5,13 +5,13 @@ const { protect, verifyAdmin, verifyPartner } = require('../middleware/authMiddl
 
 // ========== PUBLIC ROUTES (No Authentication Required) ==========
 
-// ✅ ADD THIS: Click tracking - NO AUTH REQUIRED
+// Click tracking
 router.get('/track-click/:code', partnerController.trackClick);
 
-// ✅ ADD THIS: Test click endpoint (for debugging)
+// Test click endpoint (for debugging)
 router.get('/test-click/:code', partnerController.testClickTracking);
 
-// ✅ ADD THIS: Debug click stats
+// Debug click stats
 router.get('/debug-clicks/:code', partnerController.debugPartnerClicks);
 
 // Legacy referral verification
@@ -77,11 +77,35 @@ router.put('/admin/partners/:id/status', verifyAdmin, partnerController.updatePa
 // Process payout
 router.post('/admin/partners/:id/payout', verifyAdmin, partnerController.adminProcessPayout);
 
-// ✅ ADD THESE ADMIN CLICK ROUTES:
 // Manual click update (admin only)
 router.put('/admin/partners/:id/update-clicks', verifyAdmin, partnerController.manualUpdateClicks);
 
 // Get click stats (admin only)
-router.get('/admin/partners/:id/click-stats', partnerController.getClickStats);
+router.get('/admin/partners/:id/click-stats', verifyAdmin, partnerController.getClickStats);
+
+// ✅ NEW: Debug partner orders
+router.get('/admin/partners/:id/debug-orders', verifyAdmin, partnerController.debugPartnerOrders);
+
+// ✅ NEW: Fix partner orders
+router.post('/admin/partners/:id/fix-orders', verifyAdmin, partnerController.fixPartnerOrders);
+
+
+
+// ========== STRIPE CONNECT ROUTES ==========
+
+// Partner routes
+router.get('/stripe/status', protect, verifyPartner, partnerController.getStripeBalance);
+router.get('/stripe/onboarding', protect, verifyPartner, partnerController.getStripeOnboardingLink);
+router.get('/stripe/sync-status', protect, verifyPartner, (req, res) => {
+  // This calls syncStripeAccountStatus for the logged-in partner
+  req.params.id = req.partner.id;
+  return partnerController.syncStripeAccountStatus(req, res);
+});
+
+// Admin routes
+router.get('/admin/stripe/status/:partnerId', verifyAdmin, partnerController.checkPartnerStripeStatus);
+router.post('/admin/stripe/setup/:partnerId', verifyAdmin, partnerController.setupStripeConnectForPartner);
+router.get('/admin/stripe/sync/:partnerId', verifyAdmin, partnerController.syncStripeAccountStatus);
+router.get('/admin/stripe/test-transfer/:partnerId', verifyAdmin, partnerController.testInstantTransfer);
 
 module.exports = router;

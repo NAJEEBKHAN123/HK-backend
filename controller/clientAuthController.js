@@ -158,8 +158,11 @@ exports.clientLogin = async (req, res) => {
 };
 
 // Get all clients
+// In controller/clientAuthController.js - Update getAllClients
 exports.getAllClients = async (req, res) => {
   try {
+    console.log('📊 getAllClients called by admin:', req.admin?.email);
+    
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const search = req.query.search || '';
@@ -175,32 +178,50 @@ exports.getAllClients = async (req, res) => {
           { referralCode: { $regex: search, $options: 'i' } }
         ]
       };
-    } else {
-      query = {}; // Explicit empty query when no search term
     }
     
     const clients = await Client.find(query)
+      .populate('referredBy', 'name email')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
-      
+    
+    // Get orders for each client
+    const clientsWithOrders = await Promise.all(
+      clients.map(async (client) => {
+        const orders = await Order.find({ client: client._id });
+        const totalSpend = orders.reduce((sum, order) => {
+          return sum + (order.finalPrice || order.originalPrice || 0);
+        }, 0);
+        
+        return {
+          ...client.toObject(),
+          orders: orders,
+          totalOrders: orders.length,
+          totalSpend: totalSpend
+        };
+      })
+    );
+    
     const total = await Client.countDocuments(query);
     const pages = Math.ceil(total / limit);
+    
+    console.log(`✅ Found ${total} clients, returning ${clientsWithOrders.length}`);
     
     res.status(200).json({
       success: true,
       message: "All clients fetched successfully",
-      data: clients,
+      data: clientsWithOrders,
       total,
       pages,
       page
     });
   } catch (error) {
-    console.error("Error in fetching clients:", error);
+    console.error("❌ Error in getAllClients:", error);
     res.status(500).json({
       success: false,
       message: "Error in fetching clients",
-      error: error.message // Include the actual error message
+      error: error.message
     });
   }
 };
@@ -429,63 +450,267 @@ exports.getClientOrders = async (req, res) => {
 };
 
 // ✅ NEW: Get detailed client information for partner with orders
+// In clientAuthController.js - Update getClientDetailsForPartner
 exports.getClientDetailsForPartner = async (req, res) => {
   try {
     const { id } = req.params;
     
-    // First verify the client exists and was referred by this partner
+    console.log('🔍 Getting client details for partner:', {
+      clientId: id,
+      partnerId: req.partner._id
+    });
+
+    // Verify client belongs to this partner
     const client = await Client.findOne({
       _id: id,
       referredBy: req.partner._id
-    }).populate('referredBy', 'name email');
+    }).select('name email phone clientType status createdAt referredBy');
 
     if (!client) {
+      console.log('❌ Client not found or not referred by this partner');
       return res.status(404).json({
         success: false,
         error: "Client not found or not referred by you"
       });
     }
 
-    // Find all orders for this client that were referred by this partner
+    console.log('✅ Client found:', client.email);
+
+    // Get ALL orders for this client where partner is the referrer
     const orders = await Order.find({ 
-      client: id,
-      referredBy: req.partner._id
+      'referralInfo.referredBy': req.partner._id,
+      client: id
     })
-    .select('-stripeSessionId -paymentIntentId -isCommissionProcessed -__v')
-    .sort({ createdAt: -1 });
+    .select('plan originalPrice finalPrice status commission customerDetails referralInfo createdAt')
+    .sort({ createdAt: -1 })
+    .lean(); // Use lean() for better performance
     
-    // Calculate total spend (in cents)
+    console.log(`✅ Found ${orders.length} orders for client ${client.email}`);
+
+    // ✅ FIX: Calculate commission for each order
+    const ordersWithCommission = orders.map(order => {
+      const orderObj = { ...order };
+      
+      // Convert prices from cents to euros for frontend
+      orderObj.originalPrice = (order.originalPrice || 0) / 100;
+      orderObj.finalPrice = (order.finalPrice || 0) / 100;
+      
+      // ✅ FIX: Calculate commission (€400 for completed orders)
+      let commissionAmount = 0;
+      let commissionStatus = 'pending';
+      
+      if (order.status === 'completed') {
+        // Check if commission already exists in order
+        if (order.commission && order.commission.amount) {
+          commissionAmount = order.commission.amount > 100 ? order.commission.amount / 100 : order.commission.amount;
+          commissionStatus = order.commission.status || 'pending';
+        } else {
+          // Default €400 commission for completed referral orders
+          commissionAmount = 400; // €400 in euros
+          commissionStatus = 'approved';
+        }
+      }
+      
+      orderObj.commission = {
+        amount: commissionAmount,
+        status: commissionStatus,
+        display: `€${commissionAmount.toFixed(2)}`
+      };
+      
+      // Add partner commission to order for frontend
+      orderObj.partnerCommission = commissionAmount;
+      
+      return orderObj;
+    });
+    
+    // Calculate totals
+    const totalOrders = orders.length;
+    const completedOrders = orders.filter(o => o.status === 'completed').length;
+    
+    // Total spend in euros
     const totalSpend = orders.reduce((total, order) => {
-      return total + (order.finalPrice || order.originalPrice || 0);
+      return total + ((order.finalPrice || order.originalPrice || 0) / 100);
     }, 0);
     
-    // Calculate total commission
-    const totalCommission = orders.reduce((total, order) => {
+    // Total commission in euros
+    const totalCommission = ordersWithCommission.reduce((total, order) => {
       return total + (order.partnerCommission || 0);
     }, 0);
-    
-    // Calculate average order
-    const averageOrder = orders.length > 0 ? totalSpend / orders.length : 0;
+
+    console.log('💰 Calculated totals:', {
+      totalOrders,
+      completedOrders,
+      totalSpend,
+      totalCommission
+    });
 
     return res.status(200).json({
       success: true,
       data: {
         ...client.toObject(),
-        orders: orders,
-        totalOrders: orders.length,
-        totalSpend: totalSpend,
-        totalCommission: totalCommission,
-        averageOrder: averageOrder,
-        totalSpendDisplay: `€${(totalSpend / 100).toFixed(2)}`,
-        totalCommissionDisplay: `€${(totalCommission / 100).toFixed(2)}`,
-        averageOrderDisplay: `€${(averageOrder / 100).toFixed(2)}`
+        orders: ordersWithCommission,
+        totalOrders,
+        completedOrders,
+        totalSpend,
+        totalCommission,
+        // Keep raw values for debugging
+        _raw: {
+          ordersCount: orders.length,
+          ordersData: orders.map(o => ({
+            id: o._id,
+            status: o.status,
+            finalPrice: o.finalPrice,
+            commission: o.commission
+          }))
+        }
       }
     });
+    
   } catch (error) {
-    console.error("Error fetching client details for partner:", error);
+    console.error("❌ Error fetching client details for partner:", error);
     return res.status(500).json({
       success: false,
-      error: "Error fetching client details"
+      error: "Error fetching client details",
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// ✅ NEW: Get all referred clients for a partner (for dashboard)
+// ✅ FIXED: Get all referred clients for a partner (with proper order counting)
+exports.getReferredClientsForPartner = async (req, res) => {
+  try {
+    const partnerId = req.partner._id;
+    
+    console.log('📊 Fetching referred clients for partner:', partnerId.toString());
+    
+    // Find all clients referred by this partner
+    const clients = await Client.find({
+      referredBy: partnerId
+    })
+    .select('name email source clientType status createdAt referredBy _id')
+    .sort({ createdAt: -1 })
+    .lean();
+    
+    console.log(`✅ Found ${clients.length} referred clients`);
+    
+    // Get ALL orders for this partner
+    // IMPORTANT: Check how orders are linked to clients in your Order model
+    const allPartnerOrders = await Order.find({
+      $or: [
+        { referredBy: partnerId },
+        { 'referralInfo.referredBy': partnerId }
+      ]
+    })
+    .select('client customerDetails status _id')
+    .lean();
+    
+    console.log(`📦 Found ${allPartnerOrders.length} total orders for this partner`);
+    
+    // Create a map of client IDs for quick lookup
+    const clientIdMap = {};
+    clients.forEach(client => {
+      clientIdMap[client._id.toString()] = client;
+    });
+    
+    // Debug: Show what we found
+    console.log('🔍 Orders found:', allPartnerOrders.map(order => ({
+      orderId: order._id,
+      client: order.client?.toString(),
+      customerEmail: order.customerDetails?.email,
+      status: order.status
+    })));
+    
+    // Group orders by client ID AND by email (just in case)
+    const ordersByClientId = {};
+    const ordersByEmail = {};
+    
+    allPartnerOrders.forEach(order => {
+      // Group by client ID
+      if (order.client) {
+        const clientId = order.client.toString();
+        if (!ordersByClientId[clientId]) {
+          ordersByClientId[clientId] = [];
+        }
+        ordersByClientId[clientId].push(order);
+      }
+      
+      // Also group by email (in case client field is not set)
+      if (order.customerDetails?.email) {
+        const email = order.customerDetails.email.toLowerCase();
+        if (!ordersByEmail[email]) {
+          ordersByEmail[email] = [];
+        }
+        ordersByEmail[email].push(order);
+      }
+    });
+    
+    console.log('📊 Orders grouped by client ID:', Object.keys(ordersByClientId));
+    console.log('📊 Orders grouped by email:', Object.keys(ordersByEmail));
+    
+    // Get orders for each client - try multiple matching strategies
+    const clientsWithOrders = clients.map((client) => {
+      const clientId = client._id.toString();
+      const clientEmail = client.email.toLowerCase();
+      
+      let clientOrders = [];
+      
+      // Strategy 1: Match by client ID
+      if (ordersByClientId[clientId]) {
+        clientOrders = ordersByClientId[clientId];
+        console.log(`✅ Client ${client.email}: Found ${clientOrders.length} orders by client ID`);
+      }
+      // Strategy 2: Match by email
+      else if (ordersByEmail[clientEmail]) {
+        clientOrders = ordersByEmail[clientEmail];
+        console.log(`✅ Client ${client.email}: Found ${clientOrders.length} orders by email match`);
+      }
+      else {
+        console.log(`❌ Client ${client.email}: No orders found by ID or email`);
+      }
+      
+      return {
+        ...client,
+        orders: clientOrders,
+        totalOrders: clientOrders.length,
+        source: client.source || 'REFERRAL',
+        clientType: client.clientType || 'REFERRAL'
+      };
+    });
+    
+    // Debug summary
+    const clientsWithOrdersCount = clientsWithOrders.filter(c => c.totalOrders > 0).length;
+    const totalOrdersCount = clientsWithOrders.reduce((sum, client) => sum + client.totalOrders, 0);
+    
+    console.log('📊 FINAL SUMMARY:');
+    console.log(`- Total clients: ${clients.length}`);
+    console.log(`- Clients with orders: ${clientsWithOrdersCount}`);
+    console.log(`- Total orders across all clients: ${totalOrdersCount}`);
+    
+    clientsWithOrders.forEach((client, index) => {
+      if (client.totalOrders > 0) {
+        console.log(`${index + 1}. ${client.name} (${client.email}): ${client.totalOrders} orders`);
+      }
+    });
+    
+    res.status(200).json({
+      success: true,
+      data: clientsWithOrders,
+      count: clientsWithOrders.length,
+      debug: {
+        totalClients: clients.length,
+        totalOrdersFound: allPartnerOrders.length,
+        clientsWithOrders: clientsWithOrdersCount,
+        totalOrdersAssigned: totalOrdersCount
+      }
+    });
+    
+  } catch (error) {
+    console.error("❌ Error fetching referred clients for partner:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch referred clients",
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };

@@ -4,24 +4,91 @@ const orderController = require('../controller/orderController');
 const { protect, verifyAdmin } = require('../middleware/authMiddleware');
 
 // ====================
-// PUBLIC ROUTES
+// AUTO-COMPLETION MIDDLEWARE
+// ====================
+const autoCompleteMiddleware = async (req, res, next) => {
+  try {
+    if (req.params.orderId) {
+      const Order = require('../model/Order');
+      const order = await Order.findById(req.params.orderId);
+      
+      // Auto-complete if order is pending and has a stripe session
+      if (order && 
+          order.status === 'pending' && 
+          order.stripe?.sessionId &&
+          Date.now() - new Date(order.createdAt).getTime() > 30000) { // 30 seconds old
+        
+        console.log(`🔄 Auto-completing order ${order._id} on fetch request`);
+        
+        // Update to completed
+        order.status = 'completed';
+        order.stripe.paymentStatus = 'succeeded';
+        order.paymentConfirmedAt = new Date();
+        
+        // Process commission for referral orders
+        if (order.clientType === 'REFERRAL' && 
+            order.commission?.status === 'pending' &&
+            order.referralInfo?.referredBy) {
+          
+          order.commission.status = 'approved';
+          order.referralInfo.commissionProcessed = true;
+          
+          const Partner = require('../model/Partner');
+          const partner = await Partner.findById(order.referralInfo.referredBy);
+          if (partner) {
+            partner.commission.earned = (partner.commission.earned || 0) + 40000;
+            partner.commission.available = (partner.commission.available || 0) + 40000;
+            await partner.save();
+            console.log(`💰 €400 added to partner ${partner.email}`);
+          }
+        }
+        
+        await order.save();
+        console.log(`✅ Order ${order._id} auto-completed via middleware`);
+      }
+    }
+    next();
+  } catch (error) {
+    console.error('Auto-complete middleware error:', error);
+    next();
+  }
+};
+
+// ====================
+// PUBLIC ROUTES (WITH AUTO-COMPLETION)
 // ====================
 
-// Create new order (with Stripe Checkout)
+// Create new order
 router.post('/', orderController.createOrder);
 
-// Get public order details (for success page) - FIXED VERSION
-router.get('/:orderId/public', orderController.getPublicOrder);
+// Get public order details - WITH AUTO-COMPLETION
+router.get('/:orderId/public', autoCompleteMiddleware, orderController.getPublicOrder);
 
-// Get order by session ID (for frontend to find order)
-router.get('/session/:sessionId', orderController.getOrderBySession);
+// Get order by session ID - WITH AUTO-COMPLETION
+router.get('/session/:sessionId', async (req, res) => {
+  try {
+    const Order = require('../model/Order');
+    const order = await Order.findOne({ 'stripe.sessionId': req.params.sessionId });
+    
+    if (order && order.status === 'pending') {
+      console.log(`🔄 Found pending order by session, auto-completing: ${order._id}`);
+      const result = await orderController.autoCompleteOrder(order._id);
+      console.log('Auto-complete result:', result.success ? '✅ Success' : '❌ Failed');
+    }
+    
+    return orderController.getOrderBySession(req, res);
+  } catch (error) {
+    console.error('Session auto-complete error:', error);
+    return orderController.getOrderBySession(req, res);
+  }
+});
 
-// Quick order lookup (debug endpoint)
-router.get('/lookup/:orderId', async (req, res) => {
+// Quick order lookup - WITH AUTO-COMPLETION
+router.get('/lookup/:orderId', autoCompleteMiddleware, async (req, res) => {
   try {
     const Order = require('../model/Order');
     const order = await Order.findById(req.params.orderId)
-      .select('plan originalPrice status stripeSessionId customerDetails.email createdAt stripePaymentStatus')
+      .select('plan originalPrice status stripe.sessionId customerDetails.email createdAt stripe.paymentStatus')
       .lean();
 
     if (!order) {
@@ -40,8 +107,8 @@ router.get('/lookup/:orderId', async (req, res) => {
         plan: order.plan,
         price: order.originalPrice,
         status: order.status,
-        stripeSessionId: order.stripeSessionId,
-        stripePaymentStatus: order.stripePaymentStatus || 'pending',
+        stripeSessionId: order.stripe?.sessionId,
+        stripePaymentStatus: order.stripe?.paymentStatus || 'pending',
         email: order.customerDetails?.email,
         createdAt: order.createdAt
       }
@@ -55,18 +122,22 @@ router.get('/lookup/:orderId', async (req, res) => {
 });
 
 // ====================
-// AUTO-COMPLETE ROUTES
+// MANUAL COMPLETION ENDPOINTS
 // ====================
 
-// Complete specific order
+// Complete specific order (for success page button)
 router.post('/complete/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;
+    console.log(`🔄 Manual completion requested for: ${orderId}`);
+    
     const result = await orderController.autoCompleteOrder(orderId);
     
     if (result.success) {
+      console.log(`✅ Manual completion successful: ${orderId}`);
       res.json(result);
     } else {
+      console.log(`❌ Manual completion failed: ${orderId}`, result.message);
       res.status(400).json(result);
     }
     
@@ -97,7 +168,6 @@ router.post('/complete-all-pending', async (req, res) => {
         ...result
       });
       
-      // Small delay to avoid overwhelming
       await new Promise(resolve => setTimeout(resolve, 300));
     }
     
@@ -121,13 +191,13 @@ router.post('/complete-all-pending', async (req, res) => {
   }
 });
 
-// Quick status check
-router.get('/status/:orderId', async (req, res) => {
+// Quick status check - WITH AUTO-COMPLETION
+router.get('/status/:orderId', autoCompleteMiddleware, async (req, res) => {
   try {
     const Order = require('../model/Order');
     const order = await Order.findById(req.params.orderId)
-      .select('_id plan status stripePaymentStatus customerDetails.email createdAt');
-    
+      .select('_id plan status stripe.paymentStatus customerDetails.email createdAt clientType commission.status');
+
     if (!order) {
       return res.status(404).json({
         success: false,
@@ -141,8 +211,10 @@ router.get('/status/:orderId', async (req, res) => {
         id: order._id,
         plan: order.plan,
         status: order.status,
-        stripePaymentStatus: order.stripePaymentStatus || 'none',
+        stripePaymentStatus: order.stripe?.paymentStatus || 'none',
         email: order.customerDetails?.email,
+        clientType: order.clientType,
+        commissionStatus: order.commission?.status,
         createdAt: order.createdAt,
         needsCompletion: order.status !== 'completed'
       }
@@ -157,11 +229,27 @@ router.get('/status/:orderId', async (req, res) => {
 });
 
 // ====================
-// PROTECTED ROUTES (Authenticated users)
+// STRIPE WEBHOOK ROUTES
 // ====================
 
-// Get specific order (authenticated users)
-router.get('/:orderId', protect, orderController.getOrder);
+// Primary webhook endpoint
+router.post('/webhook', 
+  express.raw({type: 'application/json'}), 
+  orderController.handleStripeWebhook
+);
+
+// Alternative webhook endpoint (some setups use this)
+router.post('/webhooks/stripe', 
+  express.raw({type: 'application/json'}), 
+  orderController.handleStripeWebhook
+);
+
+// ====================
+// PROTECTED ROUTES
+// ====================
+
+// Get specific order (authenticated users) - WITH AUTO-COMPLETION
+router.get('/:orderId', protect, autoCompleteMiddleware, orderController.getOrder);
 
 // Cancel order
 router.put('/:id/cancel', protect, orderController.cancelOrder);
@@ -170,8 +258,14 @@ router.put('/:id/cancel', protect, orderController.cancelOrder);
 // ADMIN ROUTES
 // ====================
 
+// Fix commissions for a specific partner
+router.post('/admin/partners/:partnerId/fix-commissions', verifyAdmin, orderController.fixMissingCommissions);
+
 // Get all orders
 router.get('/', verifyAdmin, orderController.getAllOrders);
+
+// Fix pending sales calculations
+router.post('/admin/fix-pending-sales', verifyAdmin, orderController.fixPendingOrdersSales);
 
 // Update order (admin only)
 router.patch('/:id', verifyAdmin, orderController.updateOrder);
@@ -179,15 +273,8 @@ router.patch('/:id', verifyAdmin, orderController.updateOrder);
 // Get order statistics
 router.get('/stats/overview', verifyAdmin, orderController.getOrderStats);
 
-// ====================
-// STRIPE WEBHOOK
-// ====================
-
-// Stripe webhook - MUST BE RAW BODY PARSER
-router.post('/webhook', 
-  express.raw({type: 'application/json'}), 
-  orderController.handleStripeWebhook
-);
+// Fix invalid commissions
+router.post('/admin/fix-commissions', verifyAdmin, orderController.fixInvalidCommissions);
 
 // ====================
 // DEBUG/HEALTH ROUTES
@@ -199,13 +286,16 @@ router.get('/health/check', (req, res) => {
     success: true,
     message: 'Orders API is working',
     timestamp: new Date().toISOString(),
+    features: {
+      autoCompletion: 'Enabled (30-second delay)',
+      webhooks: 'Enabled',
+      commissionProcessing: 'Enabled'
+    },
     endpoints: [
       'POST / - Create order',
-      'GET /:orderId/public - Public order details',
-      'GET /session/:sessionId - Find order by session',
-      'GET /lookup/:orderId - Quick order lookup',
+      'GET /:orderId/public - Public order details (auto-completes)',
+      'GET /session/:sessionId - Find order by session (auto-completes)',
       'POST /complete/:orderId - Complete order manually',
-      'POST /complete-all-pending - Complete all pending orders',
       'POST /webhook - Stripe webhook endpoint'
     ]
   });
@@ -217,21 +307,20 @@ router.post('/test/create', async (req, res) => {
     const Order = require('../model/Order');
     const testOrder = {
       plan: 'STARTER',
-      originalPrice: 390000, // €3,900.00 in cents
+      originalPrice: 390000,
       finalPrice: 390000,
       status: 'completed',
-      source: 'DIRECT',
+      clientType: 'DIRECT',
       customerDetails: {
         fullName: 'Test Customer',
         email: 'test@example.com',
-        phone: '+33123456789',
-        address: '123 Test Street, Paris',
-        birthday: new Date('1990-01-01'),
-        idFrontImage: 'https://example.com/id-front.jpg',
-        idBackImage: 'https://example.com/id-back.jpg'
+        phone: '+33123456789'
       },
-      stripeSessionId: 'cs_test_' + Math.random().toString(36).substring(7),
-      stripePaymentStatus: 'succeeded',
+      stripe: {
+        sessionId: 'cs_test_' + Math.random().toString(36).substring(7),
+        paymentStatus: 'succeeded',
+        currency: 'eur'
+      },
       paymentMethod: 'card',
       paymentConfirmedAt: new Date()
     };
@@ -270,20 +359,93 @@ router.get('/debug/status/:orderId', async (req, res) => {
       order: {
         id: order._id,
         status: order.status,
-        stripePaymentStatus: order.stripePaymentStatus,
-        stripeSessionId: order.stripeSessionId,
+        stripePaymentStatus: order.stripe?.paymentStatus,
+        stripeSessionId: order.stripe?.sessionId,
         createdAt: order.createdAt,
-        updatedAt: order.updatedAt,
+        ageSeconds: Math.floor((Date.now() - new Date(order.createdAt).getTime()) / 1000),
         price: order.originalPrice,
-        plan: order.plan
+        plan: order.plan,
+        clientType: order.clientType
       },
-      webhook: {
-        processed: order.stripePaymentStatus === 'succeeded',
-        message: order.stripePaymentStatus === 'succeeded' 
-          ? 'Webhook processed successfully' 
-          : 'Waiting for webhook'
+      autoCompletion: {
+        eligible: order.status === 'pending' && order.stripe?.sessionId,
+        willAutoComplete: Date.now() - new Date(order.createdAt).getTime() > 30000,
+        secondsUntilAutoComplete: Math.max(0, 30000 - (Date.now() - new Date(order.createdAt).getTime())) / 1000
       }
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Force auto-complete an order (debug endpoint)
+router.post('/debug/force-complete/:orderId', async (req, res) => {
+  try {
+    const Order = require('../model/Order');
+    const order = await Order.findById(req.params.orderId);
+    
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    
+    const oldStatus = order.status;
+    
+    order.status = 'completed';
+    order.stripe.paymentStatus = 'succeeded';
+    order.paymentConfirmedAt = new Date();
+    await order.save();
+    
+    res.json({
+      success: true,
+      message: 'Order force-completed',
+      order: {
+        id: order._id,
+        oldStatus: oldStatus,
+        newStatus: order.status
+      }
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Webhook simulation endpoint (for testing without Stripe)
+router.post('/simulate-webhook/:orderId', async (req, res) => {
+  try {
+    const Order = require('../model/Order');
+    const order = await Order.findById(req.params.orderId);
+    
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    
+    console.log(`🎯 Simulating webhook for order: ${order._id}`);
+    
+    // Simulate a successful payment webhook
+    const simulatedSession = {
+      id: order.stripe?.sessionId || 'simulated_session',
+      payment_intent: 'simulated_pi_' + Date.now(),
+      payment_status: 'paid',
+      metadata: {
+        orderId: order._id.toString()
+      }
+    };
+    
+    // Import and call the webhook handler
+    const { handleCompletedSession } = require('../controller/orderController');
+    await handleCompletedSession(simulatedSession);
+    
+    // Refresh order
+    const updatedOrder = await Order.findById(order._id);
+    
+    res.json({
+      success: true,
+      message: 'Webhook simulated',
+      before: { status: order.status },
+      after: { status: updatedOrder.status }
+    });
+    
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

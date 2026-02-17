@@ -1,9 +1,12 @@
+// server.js - Add these imports and routes
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const { connectDB } = require("./db");
 
+// Import routes
+const adminDashboardRoutes = require('./routes/adminDashboard');
 const bookingRouter = require("./routes/booking");
 const contactRouter = require("./routes/contact.route");
 const orderRouter = require("./routes/orderRoutes");
@@ -13,15 +16,18 @@ const partnerAdminRoutes = require("./routes/admin");
 const clientRoutes = require("./routes/clientRoute");
 const commissionRoutes = require('./routes/commissionRoutes');
 const stripeRoutes = require('./routes/stripeRoutes');
+const analyticsRoutes = require('./routes/analyticsRoutes');
 
 const app = express();
 
-// CORS
+// CORS Configuration
 app.use(cors({
   origin: [
     "http://localhost:5173",
     "https://www.ouvrir-societe-hong-kong.fr",
     "https://ouvrir-societe-hong-kong.fr",
+    "https://ouvrir-societe-hong-kong.com",
+    "https://www.ouvrir-societe-hong-kong.com",
     "https://hk-backend-tau.vercel.app"
   ],
   credentials: true,
@@ -29,7 +35,53 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
 }));
 
-// 🔥 CRITICAL FIX: Stripe webhook route FIRST (needs raw body)
+// ============================================
+// 🌐 DOMAIN-BASED LANGUAGE REDIRECTS (301 PERMANENT)
+// ============================================
+app.use((req, res, next) => {
+  const host = req.get('host');
+  const url = req.url;
+  
+  // Skip API routes, webhooks, and static files
+  if (url.startsWith('/api/') || 
+      url.startsWith('/webhook') || 
+      url.includes('.')) {
+    return next();
+  }
+  
+  // CASE 1: .fr domain with /fr/ prefix -> REMOVE it (301 permanent)
+  if (host.includes('.fr') && url.startsWith('/fr')) {
+    const newPath = url.replace(/^\/fr/, '') || '/';
+    console.log(`🔄 301 Redirect: ${host}${url} -> ${host}${newPath}`);
+    return res.redirect(301, `https://${host}${newPath}`);
+  }
+  
+  // CASE 2: .com domain with /en/ prefix -> REMOVE it (301 permanent)
+  if (host.includes('.com') && url.startsWith('/en')) {
+    const newPath = url.replace(/^\/en/, '') || '/';
+    console.log(`🔄 301 Redirect: ${host}${url} -> ${host}${newPath}`);
+    return res.redirect(301, `https://${host}${newPath}`);
+  }
+  
+  // CASE 3: Wrong language on wrong domain
+  // .com domain with /fr/ prefix -> redirect to .fr
+  if (host.includes('.com') && url.startsWith('/fr')) {
+    const newPath = url.replace(/^\/fr/, '') || '/';
+    console.log(`🔄 301 Redirect: ${host}${url} -> ouvrir-societe-hong-kong.fr${newPath}`);
+    return res.redirect(301, `https://ouvrir-societe-hong-kong.fr${newPath}`);
+  }
+  
+  // .fr domain with /en/ prefix -> redirect to .com
+  if (host.includes('.fr') && url.startsWith('/en')) {
+    const newPath = url.replace(/^\/en/, '') || '/';
+    console.log(`🔄 301 Redirect: ${host}${url} -> ouvrir-societe-hong-kong.com${newPath}`);
+    return res.redirect(301, `https://ouvrir-societe-hong-kong.com${newPath}`);
+  }
+  
+  next();
+});
+
+// 🔥 CRITICAL: Stripe webhook FIRST (needs raw body)
 app.post("/api/orders/webhook", 
   express.raw({type: 'application/json'}), 
   require("./controller/orderController").handleStripeWebhook
@@ -48,6 +100,19 @@ app.use(express.urlencoded({ extended: true }));
     console.error("❌ Database connection failed:", error.message);
   }
 })();
+
+// ✅ Register routes in correct order
+app.use("/api/admin", adminDashboardRoutes); // Dashboard routes first
+app.use("/api/admin", adminRoutes); // Other admin routes
+app.use("/api/bookings", bookingRouter);
+app.use("/api/contact", contactRouter);
+app.use("/api/orders", orderRouter);
+app.use("/api/stripe", stripeRoutes);
+app.use("/api/partner-auth", partnerAuthRoutes);
+app.use("/api/partner-admin", partnerAdminRoutes);
+app.use("/api/client", clientRoutes);
+app.use('/api/commission', commissionRoutes);
+app.use('/api/analytics', analyticsRoutes);
 
 // ✅ Emergency admin route
 app.post("/api/emergency-admin", async (req, res) => {
@@ -77,17 +142,6 @@ app.post("/api/emergency-admin", async (req, res) => {
   }
 });
 
-// Routes
-app.use("/api/admin", adminRoutes);
-app.use("/api/bookings", bookingRouter);
-app.use("/api/contact", contactRouter);
-app.use("/api/orders", orderRouter);
-app.use("/api/stripe", stripeRoutes);
-app.use("/api/partner-auth", partnerAuthRoutes);
-app.use("/api/partner-admin", partnerAdminRoutes);
-app.use("/api/client", clientRoutes);
-app.use('/api/commission', commissionRoutes);
-
 // Health check
 app.get("/api/health", (req, res) => {
   const dbState = mongoose.connection.readyState;
@@ -108,6 +162,7 @@ app.get("/api/diagnostic", (req, res) => {
     dbConnected: mongoose.connection.readyState === 1,
     timestamp: new Date().toISOString(),
     routes: [
+      "/api/admin/dashboard/stats",
       "/api/orders",
       "/api/stripe",
       "/api/partner-auth",
@@ -116,10 +171,26 @@ app.get("/api/diagnostic", (req, res) => {
   });
 });
 
+// Dashboard health check
+app.get("/api/admin/dashboard/health", (req, res) => {
+  res.json({
+    success: true,
+    message: "Dashboard API is working",
+    timestamp: new Date().toISOString(),
+    endpoints: [
+      "GET /api/admin/dashboard/stats",
+      "GET /api/admin/dashboard/quick-stats",
+      "GET /api/admin/dashboard/reports"
+    ]
+  });
+});
+
 app.get("/", (req, res) => {
   res.json({ 
-    message: "Server is running with Stripe integration",
-    timestamp: new Date().toISOString()
+    message: "Server is running with domain-based language redirects",
+    domain: req.get('host'),
+    timestamp: new Date().toISOString(),
+    version: "3.0.0"
   });
 });
 
@@ -139,7 +210,12 @@ process.on('unhandledRejection', (reason, promise) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🌐 Domain-based redirects ACTIVE`);
+  console.log(`   - .fr/fr/* -> .fr/*`);
+  console.log(`   - .com/en/* -> .com/*`);
+  console.log(`   - .com/fr/* -> .fr/*`);
+  console.log(`   - .fr/en/* -> .com/*`);
+  console.log(`📊 Dashboard: /api/admin/dashboard/stats`);
   console.log(`💳 Stripe integration: ACTIVE`);
   console.log(`🔗 Webhook: /api/orders/webhook`);
-  console.log(`⚠️  IMPORTANT: Webhook route is now BEFORE body parsers`);
 });

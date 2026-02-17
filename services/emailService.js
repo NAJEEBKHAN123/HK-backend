@@ -229,6 +229,225 @@ getOrderConfirmationHtml(order) {
     `;
   }
 
+  // Add this method to your EmailService class
+
+getPaymentSuccessHtml(order) {
+  const { customerDetails, finalPrice, plan } = order;
+  const amountPaid = finalPrice ? finalPrice / 100 : 0;
+  
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Payment Successful - Order #${order._id}</title>
+      <style>
+        body {
+          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+          line-height: 1.6;
+          color: #333;
+          max-width: 600px;
+          margin: 0 auto;
+          padding: 20px;
+          background-color: #f8f9fa;
+        }
+        .header {
+          background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
+          color: white;
+          padding: 30px 20px;
+          text-align: center;
+          border-radius: 8px 8px 0 0;
+        }
+        .header h1 {
+          margin: 0;
+          font-size: 28px;
+          font-weight: 600;
+        }
+        .content {
+          background: white;
+          padding: 30px;
+          border-radius: 0 0 8px 8px;
+          box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        }
+        .amount-display {
+          background: #f0f9f0;
+          border: 2px solid #4CAF50;
+          border-radius: 8px;
+          padding: 20px;
+          text-align: center;
+          margin: 25px 0;
+        }
+        .amount {
+          font-size: 36px;
+          color: #4CAF50;
+          font-weight: bold;
+          margin: 10px 0;
+        }
+        .order-details {
+          background: #f8f9fa;
+          padding: 20px;
+          border-radius: 6px;
+          margin: 25px 0;
+          border-left: 4px solid #4CAF50;
+        }
+        .detail-row {
+          display: flex;
+          justify-content: space-between;
+          padding: 8px 0;
+          border-bottom: 1px solid #eee;
+        }
+        .detail-row:last-child {
+          border-bottom: none;
+        }
+        .detail-label {
+          font-weight: 600;
+          color: #555;
+        }
+        .detail-value {
+          color: #333;
+        }
+        .next-steps {
+          background: #e8f4fd;
+          padding: 20px;
+          border-radius: 6px;
+          margin: 25px 0;
+          border-left: 4px solid #2196F3;
+        }
+        .next-steps h3 {
+          color: #2196F3;
+          margin-top: 0;
+        }
+        .next-steps ol {
+          margin: 0;
+          padding-left: 20px;
+        }
+        .next-steps li {
+          margin-bottom: 10px;
+        }
+        .footer {
+          text-align: center;
+          margin-top: 30px;
+          color: #666;
+          font-size: 14px;
+          padding-top: 20px;
+          border-top: 1px solid #eee;
+        }
+        .contact-info {
+          background: #f8f9fa;
+          padding: 15px;
+          border-radius: 6px;
+          margin: 20px 0;
+          text-align: center;
+        }
+        .button {
+          display: inline-block;
+          background: #4CAF50;
+          color: white;
+          padding: 12px 30px;
+          text-decoration: none;
+          border-radius: 6px;
+          font-weight: 600;
+          margin-top: 10px;
+        }
+        .button:hover {
+          background: #45a049;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <h1>✅ Payment Successful!</h1>
+        <p>Thank you for your purchase</p>
+      </div>
+      
+      <div class="content">
+        <p>Hello <strong>${customerDetails.fullName}</strong>,</p>
+        
+        <p>We're pleased to confirm that your payment has been successfully processed. Your company formation process is now underway!</p>
+        
+        <div class="amount-display">
+          <p style="margin: 0; color: #666; font-size: 14px;">Amount Paid</p>
+          <div class="amount">€${amountPaid.toFixed(2)}</div>
+          <p style="margin: 0; color: #666; font-size: 14px;">EUR</p>
+        </div>
+        
+        <div class="order-details">
+          <h3 style="margin-top: 0; color: #4CAF50;">Order Details</h3>
+          
+          <div class="detail-row">
+            <span class="detail-label">Order ID:</span>
+            <span class="detail-value">${order._id}</span>
+          </div>
+          
+          <div class="detail-row">
+            <span class="detail-label">Plan:</span>
+            <span class="detail-value">${plan} Package</span>
+          </div>
+          
+          <div class="detail-row">
+            <span class="detail-label">Customer Name:</span>
+            <span class="detail-value">${customerDetails.fullName}</span>
+          </div>
+          
+          <div class="detail-row">
+            <span class="detail-label">Customer Email:</span>
+            <span class="detail-value">${customerDetails.email}</span>
+          </div>
+          
+          <div class="detail-row">
+            <span class="detail-label">Payment Date:</span>
+            <span class="detail-value">${new Date().toLocaleDateString('en-GB', {
+              day: 'numeric',
+              month: 'long',
+              year: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit'
+            })}</span>
+          </div>
+          
+          <div class="detail-row">
+            <span class="detail-label">Transaction Reference:</span>
+            <span class="detail-value">${order.stripe?.paymentIntentId || order._id}</span>
+          </div>
+        </div>
+        
+        <div class="next-steps">
+          <h3>📋 What Happens Next?</h3>
+          <ol>
+            <li><strong>Document Review:</strong> Our team is reviewing your uploaded ID documents</li>
+            <li><strong>Company Registration:</strong> We'll begin the Hong Kong company registration process</li>
+            <li><strong>Bank Account Setup:</strong> We'll assist with opening your corporate bank account</li>
+            <li><strong>Regular Updates:</strong> You'll receive updates at each stage of the process</li>
+            <li><strong>Completion:</strong> Your complete company package will be delivered within 2-3 weeks</li>
+          </ol>
+        </div>
+        
+        <div class="contact-info">
+          <p><strong>Need Help?</strong></p>
+          <p>Our team is here to assist you every step of the way.</p>
+          <a href="mailto:bonjour@ouvrir-societe-hong-kong.fr" class="button">
+            Contact Support
+          </a>
+        </div>
+        
+        <p>You can also track your order status by replying to this email.</p>
+        
+        <p>Best regards,<br>
+        <strong>The Ouvrir Société Hong Kong Team</strong></p>
+      </div>
+      
+      <div class="footer">
+        <p>This is an automated message. Please do not reply to this email.</p>
+        <p>Ouvrir Société Hong Kong<br>
+        <a href="https://ouvrir-societe-hong-kong.fr" style="color: #4CAF50; text-decoration: none;">ouvrir-societe-hong-kong.fr</a></p>
+        <p>© ${new Date().getFullYear()} Ouvrir Société Hong Kong. All rights reserved.</p>
+      </div>
+    </body>
+    </html>
+  `;
+}
+
  getOrderDetailsTable(order, isAdmin = false) {
     return `
       <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">

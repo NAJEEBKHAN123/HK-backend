@@ -1,3 +1,4 @@
+// models/Partner.js - ENHANCED VERSION
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -40,16 +41,28 @@ const partnerSchema = new mongoose.Schema({
     referrer: String
   }],
   
-  // STRIPE CONNECT
+  // 🔥 STRIPE CONNECT - ENHANCED
   stripeConnect: {
     accountId: String,
-    status: { type: String, enum: ['not_connected', 'pending', 'active', 'suspended'], default: 'not_connected' },
+    status: { 
+      type: String, 
+      enum: ['not_connected', 'pending', 'active', 'suspended'], 
+      default: 'not_connected' 
+    },
     chargesEnabled: { type: Boolean, default: false },
     payoutsEnabled: { type: Boolean, default: false },
-    detailsSubmitted: { type: Boolean, default: false }
+    detailsSubmitted: { type: Boolean, default: false },
+    // 🔥 NEW: Track when setup was completed
+    connectedAt: Date,
+    lastSyncedAt: Date,
+    // 🔥 NEW: Store account capabilities
+    capabilities: {
+      card_payments: String,
+      transfers: String
+    }
   },
   
-  // Bank Details
+  // Bank Details (fallback if no Stripe)
   bankDetails: {
     bankName: String,
     accountName: String,
@@ -58,14 +71,20 @@ const partnerSchema = new mongoose.Schema({
     verified: { type: Boolean, default: false }
   },
   
-  // PayPal
+  // PayPal (alternative)
   paypalEmail: String,
   
-  // Settings
-  preferredPayoutMethod: { type: String, enum: ['stripe_connect', 'bank_transfer', 'paypal'], default: 'stripe_connect' },
-  autoPayoutEnabled: { type: Boolean, default: true },
-  payoutThreshold: { type: Number, default: 10000 }, // €100 in cents
-  minimumPayout: { type: Number, default: 10000 }, // €100 in cents
+  // 🔥 PAYOUT SETTINGS
+  payoutSettings: {
+    preferredMethod: { 
+      type: String, 
+      enum: ['stripe_connect', 'bank_transfer', 'paypal'], 
+      default: 'stripe_connect' 
+    },
+    autoPayoutEnabled: { type: Boolean, default: true },
+    payoutThreshold: { type: Number, default: 10000 }, // €100 in cents
+    minimumPayout: { type: Number, default: 10000 }, // €100 in cents
+  },
   
   // Timestamps
   joinedAt: { type: Date, default: Date.now },
@@ -86,19 +105,15 @@ partnerSchema.virtual('withdrawableAmount').get(function() {
 });
 
 partnerSchema.virtual('hasStripeConnect').get(function() {
-  return !!this.stripeConnect.accountId && this.stripeConnect.chargesEnabled;
+  return !!this.stripeConnect.accountId && 
+         this.stripeConnect.chargesEnabled && 
+         this.stripeConnect.status === 'active';
 });
 
-partnerSchema.virtual('commissionDisplay').get(function() {
-  const formatEuros = (cents) => `€${(cents / 100).toFixed(2)}`;
-  return {
-    earned: formatEuros(this.commission.earned),
-    available: formatEuros(this.commission.available),
-    paid: formatEuros(this.commission.paid),
-    pending: formatEuros(this.commission.pending),
-    onHold: formatEuros(this.commission.onHold),
-    withdrawable: formatEuros(this.commission.available - this.commission.pending - this.commission.onHold)
-  };
+partnerSchema.virtual('canReceiveAutoPayouts').get(function() {
+  return this.hasStripeConnect && 
+         this.payoutSettings.autoPayoutEnabled &&
+         this.stripeConnect.payoutsEnabled;
 });
 
 // Password hashing
@@ -114,7 +129,7 @@ partnerSchema.pre('save', async function(next) {
 partnerSchema.pre('save', function(next) {
   if (!this.referralCode) {
     const crypto = require('crypto');
-    this.referralCode = `HKP${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+    this.referralCode = `HKP-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
   }
   
   if (!this.referralLink && this.referralCode) {
@@ -132,244 +147,57 @@ partnerSchema.methods.comparePassword = async function(candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
-// Add commission method (for manual addition if needed)
-partnerSchema.methods.addCommission = async function(amount, description) {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  
-  try {
-    const amountInCents = Math.round(amount * 100);
-    
-    // Create commission transaction
-    const CommissionTransaction = mongoose.model('CommissionTransaction');
-    await CommissionTransaction.create([{
-      partner: this._id,
-      amount: amountInCents,
-      type: 'EARNED',
-      status: 'COMPLETED',
-      description: description || 'Manual commission addition'
-    }], { session });
-    
-    // Update partner
-    this.commission.earned += amountInCents;
-    this.commission.available += amountInCents;
-    await this.save({ session });
-    
-    await session.commitTransaction();
-    
-    return {
-      success: true,
-      amount: amountInCents,
-      newBalance: this.commission.available
-    };
-    
-  } catch (error) {
-    await session.abortTransaction();
-    throw error;
-  } finally {
-    session.endSession();
-  }
+// 🔥 NEW: Check if partner can receive instant transfers
+partnerSchema.methods.canReceiveInstantTransfer = function() {
+  return this.stripeConnect?.accountId && 
+         this.stripeConnect?.chargesEnabled &&
+         this.stripeConnect?.status === 'active';
 };
 
-// Process payout method
-partnerSchema.methods.processPayout = async function(amount, method, adminNotes = '') {
-  const session = await mongoose.startSession();
-  session.startTransaction();
+// 🔥 NEW: Process instant Stripe transfer
+partnerSchema.methods.processInstantTransfer = async function(orderAmount, orderId, stripe) {
+  if (!this.canReceiveInstantTransfer()) {
+    throw new Error('Partner cannot receive instant transfers - Stripe Connect not fully set up');
+  }
+  
+  const commissionAmount = 40000; // €400 in cents
   
   try {
-    const amountInCents = Math.round(amount * 100);
-    const withdrawable = this.commission.available - this.commission.pending - this.commission.onHold;
+    // Create transfer to partner's Stripe Connect account
+    const transfer = await stripe.transfers.create({
+      amount: commissionAmount,
+      currency: 'eur',
+      destination: this.stripeConnect.accountId,
+      description: `€400 commission for order ${orderId}`,
+      metadata: {
+        orderId: orderId.toString(),
+        partnerId: this._id.toString(),
+        partnerEmail: this.email,
+        type: 'instant_commission',
+        orderAmount: orderAmount
+      }
+    });
     
-    if (amountInCents > withdrawable) {
-      throw new Error(`Insufficient withdrawable funds. Available: €${(withdrawable / 100).toFixed(2)}`);
-    }
+    console.log(`✅ Instant transfer created: ${transfer.id} for €400 to ${this.email}`);
     
-    if (amountInCents < this.minimumPayout) {
-      throw new Error(`Minimum payout is €${(this.minimumPayout / 100).toFixed(2)}`);
-    }
-    
-    // Create payout transaction
-    const CommissionTransaction = mongoose.model('CommissionTransaction');
-    const transaction = await CommissionTransaction.create([{
-      partner: this._id,
-      amount: amountInCents,
-      type: 'PAID_OUT',
-      status: 'COMPLETED',
-      description: `Payout via ${method}`,
-      adminNotes: adminNotes,
-      paymentMethod: method,
-      balanceBefore: this.commission.available,
-      balanceAfter: this.commission.available - amountInCents
-    }], { session });
-    
-    // Update partner
-    this.commission.paid += amountInCents;
-    this.commission.available -= amountInCents;
+    // Update partner commission
+    this.commission.earned = (this.commission.earned || 0) + commissionAmount;
+    this.commission.paid = (this.commission.paid || 0) + commissionAmount;
     this.lastPayoutAt = new Date();
-    await this.save({ session });
     
-    await session.commitTransaction();
-    
-    return {
-      success: true,
-      transaction: transaction[0],
-      newBalance: this.commission.available
-    };
-    
-  } catch (error) {
-    await session.abortTransaction();
-    throw error;
-  } finally {
-    session.endSession();
-  }
-};
-
-// Hold commission method
-partnerSchema.methods.holdCommission = async function(amount, reason, adminNotes = '') {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  
-  try {
-    const amountInCents = Math.round(amount * 100);
-    
-    if (amountInCents > this.commission.available) {
-      throw new Error('Hold amount exceeds available commission');
-    }
-    
-    // Create hold transaction
-    const CommissionTransaction = mongoose.model('CommissionTransaction');
-    await CommissionTransaction.create([{
-      partner: this._id,
-      amount: amountInCents,
-      type: 'HOLD',
-      status: 'ON_HOLD',
-      description: reason || 'Commission placed on hold',
-      adminNotes: adminNotes,
-      balanceBefore: this.commission.available,
-      balanceAfter: this.commission.available - amountInCents
-    }], { session });
-    
-    // Update partner
-    this.commission.onHold += amountInCents;
-    this.commission.available -= amountInCents;
-    await this.save({ session });
-    
-    await session.commitTransaction();
+    await this.save();
     
     return {
       success: true,
-      amount: amountInCents,
-      newAvailable: this.commission.available,
-      newOnHold: this.commission.onHold
+      transferId: transfer.id,
+      amount: commissionAmount,
+      partner: this.email
     };
     
   } catch (error) {
-    await session.abortTransaction();
+    console.error(`❌ Instant transfer failed for ${this.email}:`, error.message);
     throw error;
-  } finally {
-    session.endSession();
   }
-};
-
-// Release hold method
-partnerSchema.methods.releaseHold = async function(amount, reason) {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  
-  try {
-    const amountInCents = Math.round(amount * 100);
-    
-    if (amountInCents > this.commission.onHold) {
-      throw new Error('Release amount exceeds held commission');
-    }
-    
-    // Create release transaction
-    const CommissionTransaction = mongoose.model('CommissionTransaction');
-    await CommissionTransaction.create([{
-      partner: this._id,
-      amount: amountInCents,
-      type: 'HOLD_RELEASED',
-      status: 'COMPLETED',
-      description: reason || 'Hold released',
-      balanceBefore: this.commission.available,
-      balanceAfter: this.commission.available + amountInCents
-    }], { session });
-    
-    // Update partner
-    this.commission.onHold -= amountInCents;
-    this.commission.available += amountInCents;
-    await this.save({ session });
-    
-    await session.commitTransaction();
-    
-    return {
-      success: true,
-      amount: amountInCents,
-      newAvailable: this.commission.available,
-      newOnHold: this.commission.onHold
-    };
-    
-  } catch (error) {
-    await session.abortTransaction();
-    throw error;
-  } finally {
-    session.endSession();
-  }
-};
-
-// Get commission summary
-partnerSchema.methods.getCommissionSummary = async function() {
-  const CommissionTransaction = mongoose.model('CommissionTransaction');
-  
-  // Calculate recent earnings (last 30 days)
-  const thirtyDaysAgo = new Date();
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  
-  const recentEarnings = await CommissionTransaction.aggregate([
-    {
-      $match: {
-        partner: this._id,
-        type: 'EARNED',
-        createdAt: { $gte: thirtyDaysAgo }
-      }
-    },
-    {
-      $group: {
-        _id: null,
-        total: { $sum: '$amount' }
-      }
-    }
-  ]);
-  
-  // Get pending payouts
-  const pendingPayouts = await CommissionTransaction.aggregate([
-    {
-      $match: {
-        partner: this._id,
-        type: 'PAID_OUT',
-        status: 'PENDING'
-      }
-    },
-    {
-      $group: {
-        _id: null,
-        total: { $sum: '$amount' }
-      }
-    }
-  ]);
-  
-  return {
-    summary: {
-      earned: this.commission.earned,
-      paid: this.commission.paid,
-      available: this.commission.available,
-      onHold: this.commission.onHold,
-      pending: this.commission.pending,
-      withdrawable: this.commission.available - this.commission.pending - this.commission.onHold
-    },
-    recentEarnings: recentEarnings[0]?.total || 0,
-    pendingPayouts: pendingPayouts[0]?.total || 0
-  };
 };
 
 module.exports = mongoose.model('Partner', partnerSchema);
