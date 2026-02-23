@@ -15,9 +15,9 @@ const addAdmin = async () => {
 
     // Create new admin (password will be hashed automatically by schema)
     const newAdmin = new Admin({
-      name: "aa",
-      email: "a@gmail.com",
-      password: "111222" // ❌ Do NOT hash manually
+      name: "BL Digital",
+      email: "info@bldigital.it",
+      password: "bldigital@12" // ❌ Do NOT hash manually
     });
 
     await newAdmin.save();
