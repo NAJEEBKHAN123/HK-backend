@@ -144,6 +144,8 @@ app.get("/", (req, res) => {
   });
 });
 
+// ... (keep all your routes and middleware above)
+
 // Error handling
 app.use((err, req, res, next) => {
   console.error(`[${new Date().toISOString()}] Error:`, err.message);
@@ -157,10 +159,16 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📊 Dashboard: /api/admin/dashboard/stats`);
-  console.log(`💳 Stripe integration: ACTIVE`);
-  console.log(`🔗 Webhook: /api/orders/webhook`);
-});
+// ✅ EXPORT for Vercel
+module.exports = app;
+
+// ✅ Local development only
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`📊 Dashboard: /api/admin/dashboard/stats`);
+    console.log(`💳 Stripe integration: ACTIVE`);
+    console.log(`🔗 Webhook: /api/orders/webhook`);
+  });
+}
