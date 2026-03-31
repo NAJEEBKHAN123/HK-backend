@@ -134,7 +134,7 @@ partnerSchema.pre('save', function(next) {
   
   if (!this.referralLink && this.referralCode) {
     const backendUrl = process.env.NODE_ENV === 'production' 
-      ? 'https://hk-backend-tau.vercel.app' 
+      ? 'https://hk-backend-sn76.vercel.app' 
       : 'http://localhost:3000';
     this.referralLink = `${backendUrl}/api/partner-auth/track-click/${this.referralCode}`;
   }

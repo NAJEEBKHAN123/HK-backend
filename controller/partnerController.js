@@ -582,7 +582,7 @@ exports.getPartnerDashboard = async (req, res) => {
       if (host && (host.includes('localhost') || host.includes('127.0.0.1'))) {
         return 'http://localhost:3000';
       } else {
-        return process.env.BACKEND_URL_PROD || 'https://hk-backend-tau.vercel.app';
+        return process.env.BACKEND_URL_PROD || 'https://hk-backend-sn76.vercel.app';
       }
     };
 
@@ -872,8 +872,8 @@ exports.registerPartner = async (req, res) => {
     
     // Use production URLs for external links
     const backendUrl = process.env.NODE_ENV === 'production'
-      ? 'https://hk-backend-tau.vercel.app'
-      : process.env.BACKEND_URL_PROD || 'https://hk-backend-tau.vercel.app';
+      ? 'https://hk-backend-sn76.vercel.app'
+      : process.env.BACKEND_URL_PROD || 'https://hk-backend-sn76.vercel.app';
     
     const frontendUrl = process.env.NODE_ENV === 'production'
       ? process.env.FRONTEND_URL_PROD || 'https://ouvrir-societe-hong-kong.fr'
@@ -1413,10 +1413,10 @@ exports.getAdminPartnerDetails = async (req, res) => {
         return 'http://localhost:3000';
       } else if (host && host.includes('hk-backend-tau.vercel.app')) {
         console.log('📍 ADMIN: Detected Vercel production environment');
-        return 'https://hk-backend-tau.vercel.app';
+        return 'https://hk-backend-sn76.vercel.app';
       } else {
         console.log('📍 ADMIN: Using default production URL');
-        return 'https://hk-backend-tau.vercel.app';
+        return 'https://hk-backend-sn76.vercel.app';
       }
     };
     
